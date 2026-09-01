@@ -80,6 +80,7 @@ public:
     void SendOutput(std::wstring_view data);
     HRESULT Refresh(const til::size windowSize, _Out_ til::size* dimensions);
     void RegisterScrollCallback(std::function<void(int, int, int)> callback);
+    void RegisterWriteCallback(std::function<void(std::wstring_view)> callback);
     void RegisterWriteCallback(const void _stdcall callback(wchar_t*));
     ::Microsoft::Console::Render::IRenderData* GetRenderData() const noexcept;
     HWND GetHwnd() const noexcept;
@@ -106,7 +107,7 @@ private:
     FontInfoDesired _desiredFont;
     FontInfo _actualFont;
     int _currentDpi;
-    std::function<void(wchar_t*)> _pfnWriteCallback;
+    std::function<void(std::wstring_view)> _pfnWriteCallback;
     ::Microsoft::WRL::ComPtr<HwndTerminalAutomationPeer> _uiaProvider;
 
     std::unique_ptr<::Microsoft::Terminal::Core::Terminal> _terminal;

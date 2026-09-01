@@ -63,6 +63,7 @@
     <ClInclude Include="XamlUiaTextRange.h" />
     <ClInclude Include="HwndTerminal.hpp" />
     <ClInclude Include="HwndTerminalAutomationPeer.hpp" />
+    <ClInclude Include="ReseshTerminalAbi.h" />
   </ItemGroup>
   <!-- ========================= Cpp Files ======================== -->
   <ItemGroup>
@@ -104,6 +105,7 @@
     <ClCompile Include="XamlUiaTextRange.cpp" />
     <ClCompile Include="HwndTerminal.cpp" />
     <ClCompile Include="HwndTerminalAutomationPeer.cpp" />
+    <ClCompile Include="ReseshTerminalAbi.cpp" />
   </ItemGroup>
   <!-- ========================= idl Files ======================== -->
   <ItemGroup>

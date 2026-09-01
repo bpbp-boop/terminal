@@ -1,0 +1,59 @@
+name: Resesh terminal ABI
+
+on:
+  push:
+    branches: [resesh-abi-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x64, ARM64]
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore NuGet dependencies
+        shell: pwsh
+        run: |
+          & .\dep\nuget\nuget.exe restore .\dep\nuget\packages.config -PackagesDirectory .\packages -NonInteractive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Microsoft.Terminal.Control
+        shell: pwsh
+        run: |
+          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe |
+            Select-Object -First 1
+          if (-not $msbuild) { throw "MSBuild was not found." }
+          & $msbuild .\src\cascadia\TerminalControl\dll\TerminalControl.vcxproj `
+            /m /p:Configuration=Release /p:Platform=${{ matrix.architecture }} `
+            /p:AppxSymbolPackageEnabled=false /p:OpenConsoleDir="$PWD\" `
+            /p:SolutionDir="$PWD\" /p:VcpkgRoot="$env:VCPKG_INSTALLATION_ROOT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Collect ABI artifact
+        shell: pwsh
+        run: |
+          $source = Join-Path $PWD "bin\${{ matrix.architecture }}\Release\Microsoft.Terminal.Control"
+          $destination = Join-Path $PWD "artifact\${{ matrix.architecture }}"
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          Copy-Item "$source\Microsoft.Terminal.Control.dll" $destination
+          Copy-Item "$source\Microsoft.Terminal.Control.pdb" $destination
+          Copy-Item .\LICENSE $destination
+          Get-FileHash "$destination\Microsoft.Terminal.Control.dll" -Algorithm SHA256 |
+            Select-Object Algorithm, Hash, Path | ConvertTo-Json |
+            Set-Content "$destination\sha256.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resesh-terminal-${{ matrix.architecture }}
+          path: artifact/${{ matrix.architecture }}
+          if-no-files-found: error

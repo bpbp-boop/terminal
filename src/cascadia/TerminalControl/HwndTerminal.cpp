@@ -354,15 +354,28 @@ void HwndTerminal::_WriteTextToConnection(const std::wstring_view input) noexcep
 
     try
     {
-        auto callingText{ wil::make_cotaskmem_string(input.data(), input.size()) };
-        _pfnWriteCallback(callingText.release());
+        _pfnWriteCallback(input);
     }
     CATCH_LOG();
 }
 
+void HwndTerminal::RegisterWriteCallback(std::function<void(std::wstring_view)> callback)
+{
+    _pfnWriteCallback = std::move(callback);
+}
+
 void HwndTerminal::RegisterWriteCallback(const void _stdcall callback(wchar_t*))
 {
-    _pfnWriteCallback = callback;
+    if (!callback)
+    {
+        _pfnWriteCallback = {};
+        return;
+    }
+
+    RegisterWriteCallback([callback](const std::wstring_view input) {
+        auto callingText{ wil::make_cotaskmem_string(input.data(), input.size()) };
+        callback(callingText.release());
+    });
 }
 
 ::Microsoft::Console::Render::IRenderData* HwndTerminal::GetRenderData() const noexcept

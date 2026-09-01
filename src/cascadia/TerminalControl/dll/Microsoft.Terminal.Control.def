@@ -25,3 +25,17 @@ EXPORTS
   TerminalTriggerResize
   TerminalTriggerResizeWithDimension
   TerminalUserScroll
+  ReseshTerminalClearSelection
+  ReseshTerminalCreate
+  ReseshTerminalDestroy
+  ReseshTerminalGetAbiVersion
+  ReseshTerminalGetBuildId
+  ReseshTerminalIsSelectionActive
+  ReseshTerminalRegisterEventCallback
+  ReseshTerminalResizePixels
+  ReseshTerminalSendCharEvent
+  ReseshTerminalSendKeyEvent
+  ReseshTerminalSendOutput
+  ReseshTerminalSetFocused
+  ReseshTerminalSetOptions
+  ReseshTerminalUserScroll
