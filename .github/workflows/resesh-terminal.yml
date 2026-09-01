@@ -39,6 +39,22 @@ jobs:
             /p:SolutionDir="$PWD\" /p:VcpkgRoot="$env:VCPKG_INSTALLATION_ROOT"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Build and run resesh ABI tests
+        if: matrix.architecture == 'x64'
+        shell: pwsh
+        run: |
+          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe |
+            Select-Object -First 1
+          & $msbuild .\OpenConsole.sln /t:Tests\UnitTests_Control `
+            /m /p:Configuration=Release /p:Platform=x64 `
+            /p:AppxSymbolPackageEnabled=false /p:OpenConsoleDir="$PWD\" `
+            /p:SolutionDir="$PWD\" /p:VcpkgRoot="$env:VCPKG_INSTALLATION_ROOT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\build\scripts\Run-Tests.ps1 "Control.Unit.Tests.dll" x64 Release `
+            -AdditionalTaefArguments "/name:*ReseshTerminalAbiTests*"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Collect ABI artifact
         shell: pwsh
         run: |
