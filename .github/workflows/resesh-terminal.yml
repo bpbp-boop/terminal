@@ -33,7 +33,7 @@ jobs:
             -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe |
             Select-Object -First 1
           if (-not $msbuild) { throw "MSBuild was not found." }
-          & $msbuild .\src\cascadia\TerminalControl\dll\TerminalControl.vcxproj `
+          & $msbuild .\OpenConsole.sln /t:Terminal\Control\Microsoft_Terminal_Control `
             /m /p:Configuration=Release /p:Platform=${{ matrix.architecture }} `
             /p:AppxSymbolPackageEnabled=false /p:OpenConsoleDir="$PWD\" `
             /p:SolutionDir="$PWD\" /p:VcpkgRoot="$env:VCPKG_INSTALLATION_ROOT"
