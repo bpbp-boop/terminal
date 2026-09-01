@@ -170,6 +170,7 @@ namespace ControlUnitTests
         TEST_METHOD(CreatesAndDestroys100Terminals);
         TEST_METHOD(CopiesSelectionWithConfiguredFormats);
         TEST_METHOD(HonorsCopyOnSelectAndRightClickSettings);
+        TEST_METHOD(HonorsOscClipboardPolicy);
         TEST_METHOD(FiltersNormalAndBracketedPaste);
     };
 
@@ -442,6 +443,43 @@ namespace ControlUnitTests
         SendMessageW(child, WM_RBUTTONDOWN, 0, MAKELPARAM(2, 2));
         PumpPostedMessages();
         VERIFY_ARE_EQUAL(countWithRightClick, events.Snapshot().size());
+    }
+
+    void ReseshTerminalAbiTests::HonorsOscClipboardPolicy()
+    {
+        const auto module = LoadAbiModule();
+        const auto closeModule = wil::scope_exit([&]() noexcept { FreeLibrary(module); });
+        const auto create = LoadExport<decltype(&ReseshTerminalCreate)>(module, "ReseshTerminalCreate");
+        const auto destroy = LoadExport<decltype(&ReseshTerminalDestroy)>(module, "ReseshTerminalDestroy");
+        const auto registerCallback = LoadExport<decltype(&ReseshTerminalRegisterEventCallback)>(module, "ReseshTerminalRegisterEventCallback");
+        const auto sendOutput = LoadExport<decltype(&ReseshTerminalSendOutput)>(module, "ReseshTerminalSendOutput");
+        const auto parent = CreateParentWindow();
+        const auto closeParent = wil::scope_exit([&]() noexcept { DestroyWindow(parent); });
+        constexpr wchar_t oscClipboard[]{ L"\x1b]52;c;Y2xpcA==\x07" };
+
+        const auto runPolicy = [&](const bool allowed) {
+            auto options = DefaultOptions(parent);
+            if (allowed)
+            {
+                options.flags |= ReseshTerminalCreateAllowOscClipboard |
+                                 ReseshTerminalCreateAllowOscNotifications;
+            }
+            HWND child{};
+            ReseshTerminalHandle terminal{};
+            VERIFY_SUCCEEDED(create(&options, &child, &terminal));
+            EventLog events;
+            VERIFY_SUCCEEDED(registerCallback(terminal, CaptureCallback, &events));
+            VERIFY_SUCCEEDED(sendOutput(terminal, oscClipboard, gsl::narrow<uint32_t>(std::size(oscClipboard) - 1)));
+            const auto captured = events.Snapshot();
+            VERIFY_SUCCEEDED(destroy(terminal));
+            return captured;
+        };
+
+        VERIFY_IS_TRUE(runPolicy(false).empty());
+        const auto allowedEvents = runPolicy(true);
+        VERIFY_ARE_EQUAL(static_cast<size_t>(1), allowedEvents.size());
+        VERIFY_ARE_EQUAL(static_cast<uint32_t>(ReseshTerminalEventTypeClipboardCopy), allowedEvents[0].type);
+        VERIFY_ARE_EQUAL(std::wstring{ L"clip" }, allowedEvents[0].text);
     }
 
     void ReseshTerminalAbiTests::FiltersNormalAndBracketedPaste()
