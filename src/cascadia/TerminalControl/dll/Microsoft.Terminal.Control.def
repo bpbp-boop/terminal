@@ -26,12 +26,14 @@ EXPORTS
   TerminalTriggerResizeWithDimension
   TerminalUserScroll
   ReseshTerminalClearSelection
+  ReseshTerminalCopySelection
   ReseshTerminalCreate
   ReseshTerminalDestroy
   ReseshTerminalGetAbiVersion
   ReseshTerminalGetBuildId
   ReseshTerminalIsSelectionActive
   ReseshTerminalRegisterEventCallback
+  ReseshTerminalPasteText
   ReseshTerminalResizePixels
   ReseshTerminalSendCharEvent
   ReseshTerminalSendKeyEvent

@@ -7,7 +7,7 @@
 #include <windows.h>
 
 #define RESESH_TERMINAL_ABI_MAJOR 1u
-#define RESESH_TERMINAL_ABI_MINOR 0u
+#define RESESH_TERMINAL_ABI_MINOR 1u
 #define RESESH_TERMINAL_ABI_VERSION ((RESESH_TERMINAL_ABI_MAJOR << 16u) | RESESH_TERMINAL_ABI_MINOR)
 
 #ifdef __cplusplus
@@ -19,12 +19,40 @@ typedef void* ReseshTerminalHandle;
 typedef enum ReseshTerminalEventType
 {
     ReseshTerminalEventTypeInput = 1,
+    ReseshTerminalEventTypeClipboardCopy = 2,
+    ReseshTerminalEventTypeClipboardPasteRequest = 3,
 } ReseshTerminalEventType;
 
 typedef enum ReseshTerminalOptionFlags
 {
     ReseshTerminalOptionTheme = 0x00000001u,
+    ReseshTerminalOptionInteraction = 0x00000002u,
 } ReseshTerminalOptionFlags;
+
+typedef enum ReseshTerminalCreateFlags
+{
+    ReseshTerminalCreateEnableBuiltinGlyphs = 0x00000001u,
+    ReseshTerminalCreateEnableColorGlyphs = 0x00000002u,
+    ReseshTerminalCreateDetectUrls = 0x00000004u,
+    ReseshTerminalCreateCopyOnSelect = 0x00000008u,
+    ReseshTerminalCreateRightClickPaste = 0x00000010u,
+    ReseshTerminalCreateSnapOnInput = 0x00000020u,
+    ReseshTerminalCreateAllowOscClipboard = 0x00000040u,
+    ReseshTerminalCreateAllowOscNotifications = 0x00000080u,
+    ReseshTerminalCreateReadOnly = 0x00000100u,
+} ReseshTerminalCreateFlags;
+
+typedef enum ReseshTerminalCopyFormatFlags
+{
+    ReseshTerminalCopyFormatHtml = 0x00000001u,
+    ReseshTerminalCopyFormatRtf = 0x00000002u,
+} ReseshTerminalCopyFormatFlags;
+
+typedef enum ReseshTerminalPasteFilterFlags
+{
+    ReseshTerminalPasteFilterCarriageReturnNewline = 0x00000001u,
+    ReseshTerminalPasteFilterControlCodes = 0x00000002u,
+} ReseshTerminalPasteFilterFlags;
 
 typedef struct ReseshTerminalCreateOptions
 {
@@ -32,6 +60,24 @@ typedef struct ReseshTerminalCreateOptions
     uint16_t abiMajor;
     uint16_t abiMinor;
     HWND parentHwnd;
+    int32_t initialColumns;
+    int32_t initialRows;
+    int32_t historySize;
+    uint32_t flags;
+    const wchar_t* fontFamily;
+    uint32_t fontFamilyLength;
+    int16_t fontSize;
+    uint16_t fontWeight;
+    uint32_t defaultBackground;
+    uint32_t defaultForeground;
+    uint32_t selectionBackground;
+    uint32_t cursorColor;
+    uint32_t cursorStyle;
+    uint32_t colorTable[16];
+    uint32_t copyFormatting;
+    uint32_t pasteFiltering;
+    const wchar_t* wordDelimiters;
+    uint32_t wordDelimitersLength;
 } ReseshTerminalCreateOptions;
 
 typedef struct ReseshTerminalEvent
@@ -40,10 +86,14 @@ typedef struct ReseshTerminalEvent
     uint16_t abiMajor;
     uint16_t abiMinor;
     uint32_t type;
-    uint32_t reserved;
+    uint32_t flags;
     uint64_t sequence;
     const wchar_t* text;
     uint32_t textLength;
+    const char* html;
+    uint32_t htmlLength;
+    const char* rtf;
+    uint32_t rtfLength;
 } ReseshTerminalEvent;
 
 typedef struct ReseshTerminalOptions
@@ -55,6 +105,7 @@ typedef struct ReseshTerminalOptions
     uint32_t defaultBackground;
     uint32_t defaultForeground;
     uint32_t defaultSelectionBackground;
+    uint32_t cursorColor;
     uint32_t cursorStyle;
     uint32_t colorTable[16];
     const wchar_t* fontFamily;
@@ -62,6 +113,9 @@ typedef struct ReseshTerminalOptions
     int16_t fontSize;
     uint16_t reserved;
     int32_t dpi;
+    uint32_t interactionFlags;
+    uint32_t copyFormatting;
+    uint32_t pasteFiltering;
 } ReseshTerminalOptions;
 
 typedef void(__stdcall* ReseshTerminalEventCallback)(
@@ -116,6 +170,13 @@ __declspec(dllexport) HRESULT __stdcall ReseshTerminalIsSelectionActive(
 __declspec(dllexport) HRESULT __stdcall ReseshTerminalUserScroll(
     ReseshTerminalHandle terminal,
     int32_t viewTop);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalCopySelection(
+    ReseshTerminalHandle terminal,
+    uint8_t clearSelection);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalPasteText(
+    ReseshTerminalHandle terminal,
+    const wchar_t* text,
+    uint32_t textLength);
 
 #ifdef __cplusplus
 }

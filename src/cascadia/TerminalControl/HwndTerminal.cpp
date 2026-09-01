@@ -5,6 +5,8 @@
 #include "HwndTerminal.hpp"
 
 #include <DefaultSettings.h>
+#include "../inc/ControlProperties.h"
+#include "../../inc/utils.hpp"
 #include <windowsx.h>
 
 #include "HwndTerminalAutomationPeer.hpp"
@@ -17,7 +19,53 @@
 using namespace ::Microsoft::Console::VirtualTerminal;
 using namespace ::Microsoft::Terminal::Core;
 
+namespace
+{
+    class HwndTerminalSettings final : public winrt::implements<HwndTerminalSettings, ICoreSettings, ICoreAppearance>
+    {
+        std::array<winrt::Microsoft::Terminal::Core::Color, COLOR_TABLE_SIZE> _ColorTable{};
+
+    public:
+#define SETTINGS_GEN(type, name, ...) til::property<type> name{ __VA_ARGS__ };
+        CORE_SETTINGS(SETTINGS_GEN)
+        CORE_APPEARANCE_SETTINGS(SETTINGS_GEN)
+#undef SETTINGS_GEN
+
+        explicit HwndTerminalSettings(const HwndTerminalOptions& options) :
+            HistorySize{ options.HistorySize },
+            InitialRows{ options.InitialSize.height },
+            InitialCols{ options.InitialSize.width },
+            SnapOnInput{ options.SnapOnInput },
+            WordDelimiters{ options.WordDelimiters },
+            CopyOnSelect{ options.CopyOnSelect },
+            DetectURLs{ options.DetectUrls },
+            AllowVtClipboardWrite{ options.AllowOscClipboard },
+            DefaultForeground{ til::color{ options.Theme.DefaultForeground } },
+            DefaultBackground{ til::color{ options.Theme.DefaultBackground } },
+            CursorColor{ til::color{ options.CursorColor } },
+            CursorShape{ static_cast<winrt::Microsoft::Terminal::Core::CursorStyle>(options.Theme.CursorStyle) },
+            SelectionBackground{ til::color{ options.Theme.DefaultSelectionBackground } }
+        {
+            for (size_t index = 0; index < _ColorTable.size(); ++index)
+            {
+                _ColorTable[index] = til::color{ options.Theme.ColorTable[index] };
+            }
+        }
+
+        winrt::Microsoft::Terminal::Core::Color GetColorTableEntry(const int32_t index) const
+        {
+            return _ColorTable.at(index);
+        }
+
+        void SetColorTableEntry(const int32_t index, const winrt::Microsoft::Terminal::Core::Color color)
+        {
+            _ColorTable.at(index) = color;
+        }
+    };
+}
+
 static LPCWSTR term_window_class = L"HwndTerminalClass";
+static constexpr UINT WmReseshDispatchEvents = WM_APP + 0x51;
 
 STDMETHODIMP HwndTerminal::TsfDataProvider::QueryInterface(REFIID, void**) noexcept
 {
@@ -168,6 +216,10 @@ try
             LOG_IF_FAILED(publicTerminal->_StartSelection(lParam));
             return 0;
         case WM_LBUTTONUP:
+            if (publicTerminal->_copyOnSelect)
+            {
+                publicTerminal->CopySelection(false);
+            }
             publicTerminal->_singleClickTouchdownPos = std::nullopt;
             [[fallthrough]];
         case WM_MBUTTONUP:
@@ -182,23 +234,25 @@ try
             }
             break;
         case WM_RBUTTONDOWN:
-            try
+        {
+            const auto copied = !publicTerminal->_copyOnSelect && publicTerminal->CopySelection(true);
+            if (publicTerminal->_copyOnSelect)
             {
-                if (publicTerminal->_terminal)
-                {
-                    const auto lock = publicTerminal->_terminal->LockForWriting();
-                    if (publicTerminal->_terminal->IsSelectionActive())
-                    {
-                        const auto bufferData = publicTerminal->_terminal->RetrieveSelectedTextFromBuffer(false, false, true, true);
-                        LOG_IF_FAILED(publicTerminal->_CopyTextToSystemClipboard(bufferData.plainText, bufferData.html, bufferData.rtf));
-                        publicTerminal->_ClearSelection();
-                        return 0;
-                    }
-                }
-                publicTerminal->_PasteTextFromClipboard();
-                return 0;
+                publicTerminal->_ClearSelection();
             }
-            CATCH_LOG();
+            if (publicTerminal->_rightClickPaste && !publicTerminal->_readOnly &&
+                (publicTerminal->_copyOnSelect || !copied) && publicTerminal->_pasteRequestCallback)
+            {
+                publicTerminal->_pasteRequestCallback();
+            }
+            return 0;
+        }
+        case WmReseshDispatchEvents:
+            if (publicTerminal->_eventDispatchCallback)
+            {
+                publicTerminal->_eventDispatchCallback();
+            }
+            return 0;
         case WM_DESTROY:
             // Release Terminal's hwnd so Teardown doesn't try to destroy it again
             publicTerminal->_hwnd.release();
@@ -238,14 +292,19 @@ static bool RegisterTermClass(HINSTANCE hInstance) noexcept
     return RegisterClassW(&wc) != 0;
 }
 
-HwndTerminal::HwndTerminal(HWND parentHwnd) noexcept :
-    _desiredFont{ L"Consolas", 0, DEFAULT_FONT_WEIGHT, 14, CP_UTF8 },
-    _actualFont{ L"Consolas", 0, DEFAULT_FONT_WEIGHT, { 0, 14 }, CP_UTF8, false },
-    _uiaProvider{ nullptr },
+HwndTerminal::HwndTerminal(HWND parentHwnd, const HwndTerminalOptions& options) noexcept :
+    _desiredFont{ options.FontFamily, 0, options.FontWeight, options.FontSize, CP_UTF8 },
+    _actualFont{ options.FontFamily, 0, options.FontWeight, { 0, options.FontSize }, CP_UTF8, false },
     _currentDpi{ USER_DEFAULT_SCREEN_DPI },
-    _pfnWriteCallback{ nullptr },
+    _copyOnSelect{ options.CopyOnSelect },
+    _rightClickPaste{ options.RightClickPaste },
+    _readOnly{ options.ReadOnly },
+    _copyFormatting{ options.CopyFormatting },
+    _pasteFiltering{ options.PasteFiltering },
     _multiClickTime{ 500 } // this will be overwritten by the windows system double-click time
 {
+    _desiredFont.SetEnableBuiltinGlyphs(options.EnableBuiltinGlyphs);
+    _desiredFont.SetEnableColorGlyphs(options.EnableColorGlyphs);
     auto hInstance = wil::GetModuleInstanceHandle();
 
     if (RegisterTermClass(hInstance))
@@ -274,7 +333,7 @@ HwndTerminal::~HwndTerminal()
     Teardown();
 }
 
-HRESULT HwndTerminal::Initialize()
+HRESULT HwndTerminal::Initialize(const HwndTerminalOptions& options)
 {
     _terminal = std::make_unique<::Microsoft::Terminal::Core::Terminal>();
     const auto lock = _terminal->LockForWriting();
@@ -301,9 +360,15 @@ HRESULT HwndTerminal::Initialize()
 
     _renderEngine = std::move(engine);
 
-    _terminal->Create({ 80, 25 }, 9001, *_renderer);
+    const auto settings = winrt::make<HwndTerminalSettings>(options);
+    _terminal->CreateFromSettings(settings, *_renderer);
     _terminal->SetWriteInputCallback([=](std::wstring_view input) noexcept { _WriteTextToConnection(input); });
-    _terminal->SetCopyToClipboardCallback([=](wil::zwstring_view text) noexcept { _CopyTextToSystemClipboard(text, {}, {}); });
+    _terminal->SetCopyToClipboardCallback([=](const wil::zwstring_view text) noexcept {
+        if (_clipboardCallback)
+        {
+            _clipboardCallback(text, {}, {});
+        }
+    });
     _renderer->EnablePainting();
 
     _multiClickTime = std::chrono::milliseconds{ GetDoubleClickTime() };
@@ -322,9 +387,15 @@ try
     _renderer.reset();
     _renderEngine.reset();
 
-    // These two callbacks have a dangling reference to `this`; let's just clear them
-    _terminal->SetWriteInputCallback(nullptr);
-    _terminal->SetCopyToClipboardCallback(nullptr);
+    if (_terminal)
+    {
+        // These callbacks have a dangling reference to `this`; clear them before destruction.
+        _terminal->SetWriteInputCallback(nullptr);
+        _terminal->SetCopyToClipboardCallback(nullptr);
+    }
+    _clipboardCallback = {};
+    _pasteRequestCallback = {};
+    _eventDispatchCallback = {};
 
     if (auto localHwnd{ _hwnd.release() })
     {
@@ -376,6 +447,95 @@ void HwndTerminal::RegisterWriteCallback(const void _stdcall callback(wchar_t*))
         auto callingText{ wil::make_cotaskmem_string(input.data(), input.size()) };
         callback(callingText.release());
     });
+}
+
+void HwndTerminal::RegisterClipboardCallback(std::function<void(std::wstring_view, std::string_view, std::string_view)> callback)
+{
+    _clipboardCallback = std::move(callback);
+}
+
+void HwndTerminal::RegisterPasteRequestCallback(std::function<void()> callback)
+{
+    _pasteRequestCallback = std::move(callback);
+}
+
+void HwndTerminal::RegisterEventDispatchCallback(std::function<void()> callback)
+{
+    _eventDispatchCallback = std::move(callback);
+}
+
+void HwndTerminal::RequestEventDispatch() const noexcept
+{
+    if (_hwnd)
+    {
+        LOG_LAST_ERROR_IF(!PostMessageW(_hwnd.get(), WmReseshDispatchEvents, 0, 0));
+    }
+}
+
+void HwndTerminal::ApplyInteractionOptions(
+    const uint32_t flags,
+    const uint32_t copyFormatting,
+    const uint32_t pasteFiltering) noexcept
+{
+    _copyOnSelect = WI_IsFlagSet(flags, 0x8u);
+    _rightClickPaste = WI_IsFlagSet(flags, 0x10u);
+    _readOnly = WI_IsFlagSet(flags, 0x100u);
+    _copyFormatting = copyFormatting;
+    _pasteFiltering = pasteFiltering;
+}
+
+bool HwndTerminal::CopySelection(const bool clearSelection)
+{
+    if (!_terminal || !_clipboardCallback)
+    {
+        return false;
+    }
+
+    ::Microsoft::Terminal::Core::Terminal::TextCopyData payload;
+    {
+        const auto lock = _terminal->LockForWriting();
+        if (!_terminal->IsSelectionActive())
+        {
+            return false;
+        }
+
+        const auto copyHtml = WI_IsFlagSet(_copyFormatting, 0x1u);
+        const auto copyRtf = WI_IsFlagSet(_copyFormatting, 0x2u);
+        payload = _terminal->RetrieveSelectedTextFromBuffer(false, false, copyHtml, copyRtf);
+        if (clearSelection)
+        {
+            _ClearSelection();
+        }
+    }
+
+    _clipboardCallback(payload.plainText, payload.html, payload.rtf);
+    return true;
+}
+
+void HwndTerminal::PasteText(const std::wstring_view text)
+{
+    if (!_terminal || _readOnly || text.empty())
+    {
+        return;
+    }
+
+    auto filtered = ::Microsoft::Console::Utils::FilterStringForPaste(
+        text,
+        static_cast<::Microsoft::Console::Utils::FilterOption>(_pasteFiltering));
+    {
+        const auto lock = _terminal->LockForReading();
+        if (_terminal->IsXtermBracketedPasteModeEnabled())
+        {
+            filtered.insert(0, L"\x1b[200~");
+            filtered.append(L"\x1b[201~");
+        }
+    }
+
+    _WriteTextToConnection(filtered);
+
+    const auto lock = _terminal->LockForWriting();
+    _ClearSelection();
+    _terminal->TrySnapOnInput();
 }
 
 ::Microsoft::Console::Render::IRenderData* HwndTerminal::GetRenderData() const noexcept
@@ -482,9 +642,19 @@ void _stdcall AvoidBuggyTSFConsoleFlags()
 
 HRESULT _stdcall CreateTerminal(HWND parentHwnd, _Out_ void** hwnd, _Out_ void** terminal)
 {
-    auto publicTerminal = std::make_unique<HwndTerminal>(parentHwnd);
+    HwndTerminalOptions options{};
+    options.Theme.DefaultBackground = RGB(12, 12, 12);
+    options.Theme.DefaultForeground = RGB(204, 204, 204);
+    options.Theme.DefaultSelectionBackground = RGB(38, 79, 120);
+    options.Theme.CursorColor = RGB(255, 255, 255);
+    options.Theme.CursorStyle = 0;
+    const auto colors = ::Microsoft::Console::Utils::CampbellColorTable();
+    std::copy_n(colors.begin(), std::size(options.Theme.ColorTable), options.Theme.ColorTable);
+    options.CursorColor = options.Theme.CursorColor;
+    options.WordDelimiters = DEFAULT_WORD_DELIMITERS;
+    auto publicTerminal = std::make_unique<HwndTerminal>(parentHwnd, options);
 
-    RETURN_IF_FAILED(publicTerminal->Initialize());
+    RETURN_IF_FAILED(publicTerminal->Initialize(options));
 
     *hwnd = publicTerminal->GetHwnd();
     *terminal = publicTerminal.release();
@@ -975,6 +1145,7 @@ void _stdcall TerminalSetTheme(void* terminal, TerminalTheme theme, LPCWSTR font
         renderSettings.SetColorTableEntry(TextColor::DEFAULT_FOREGROUND, theme.DefaultForeground);
         renderSettings.SetColorTableEntry(TextColor::DEFAULT_BACKGROUND, theme.DefaultBackground);
         renderSettings.SetColorTableEntry(TextColor::SELECTION_BACKGROUND, theme.DefaultSelectionBackground);
+        renderSettings.SetColorTableEntry(TextColor::CURSOR_COLOR, theme.CursorColor);
 
         // Set the font colors
         for (size_t tableIndex = 0; tableIndex < 16; tableIndex++)
@@ -1061,123 +1232,6 @@ void __stdcall TerminalKillFocus(void* terminal)
     }
 }
 
-// Routine Description:
-// - Copies the text given onto the global system clipboard.
-// Arguments:
-// - text - selected text in plain-text format
-// - htmlData - selected text in HTML format
-// - rtfData - selected text in RTF format
-HRESULT HwndTerminal::_CopyTextToSystemClipboard(wil::zwstring_view text, wil::zstring_view htmlData, wil::zstring_view rtfData) const
-try
-{
-    RETURN_HR_IF_NULL(E_NOT_VALID_STATE, _terminal);
-
-    // allocate the final clipboard data
-    const auto cchNeeded = text.size() + 1;
-    const auto cbNeeded = sizeof(wchar_t) * cchNeeded;
-    wil::unique_hglobal globalHandle(GlobalAlloc(GMEM_MOVEABLE | GMEM_DDESHARE, cbNeeded));
-    RETURN_LAST_ERROR_IF_NULL(globalHandle.get());
-
-    auto pwszClipboard = static_cast<PWSTR>(GlobalLock(globalHandle.get()));
-    RETURN_LAST_ERROR_IF_NULL(pwszClipboard);
-
-    // The pattern gets a bit strange here because there's no good wil built-in for global lock of this type.
-    // Try to copy then immediately unlock. Don't throw until after (so the hglobal won't be freed until we unlock).
-    const auto hr = StringCchCopyW(pwszClipboard, cchNeeded, text.data());
-    GlobalUnlock(globalHandle.get());
-    RETURN_IF_FAILED(hr);
-
-    // Set global data to clipboard
-    RETURN_LAST_ERROR_IF(!OpenClipboard(_hwnd.get()));
-
-    { // Clipboard Scope
-        auto clipboardCloser = wil::scope_exit([]() {
-            LOG_LAST_ERROR_IF(!CloseClipboard());
-        });
-
-        RETURN_LAST_ERROR_IF(!EmptyClipboard());
-        RETURN_LAST_ERROR_IF_NULL(SetClipboardData(CF_UNICODETEXT, globalHandle.get()));
-
-        if (!htmlData.empty())
-        {
-            RETURN_IF_FAILED(_CopyToSystemClipboard(htmlData, L"HTML Format"));
-        }
-
-        if (!rtfData.empty())
-        {
-            RETURN_IF_FAILED(_CopyToSystemClipboard(rtfData, L"Rich Text Format"));
-        }
-    }
-
-    // only free if we failed.
-    // the memory has to remain allocated if we successfully placed it on the clipboard.
-    // Releasing the smart pointer will leave it allocated as we exit scope.
-    globalHandle.release();
-
-    return S_OK;
-}
-CATCH_RETURN()
-
-// Routine Description:
-// - Copies the given string onto the global system clipboard in the specified format
-// Arguments:
-// - stringToCopy - The string to copy
-// - lpszFormat - the name of the format
-HRESULT HwndTerminal::_CopyToSystemClipboard(wil::zstring_view stringToCopy, LPCWSTR lpszFormat) const
-{
-    const auto cbData = stringToCopy.size() + 1; // +1 for '\0'
-    if (cbData)
-    {
-        wil::unique_hglobal globalHandleData(GlobalAlloc(GMEM_MOVEABLE | GMEM_DDESHARE, cbData));
-        RETURN_LAST_ERROR_IF_NULL(globalHandleData.get());
-
-        auto pszClipboardHTML = static_cast<PSTR>(GlobalLock(globalHandleData.get()));
-        RETURN_LAST_ERROR_IF_NULL(pszClipboardHTML);
-
-        // The pattern gets a bit strange here because there's no good wil built-in for global lock of this type.
-        // Try to copy then immediately unlock. Don't throw until after (so the hglobal won't be freed until we unlock).
-        const auto hr2 = StringCchCopyA(pszClipboardHTML, cbData, stringToCopy.data());
-        GlobalUnlock(globalHandleData.get());
-        RETURN_IF_FAILED(hr2);
-
-        const auto CF_FORMAT = RegisterClipboardFormatW(lpszFormat);
-        RETURN_LAST_ERROR_IF(0 == CF_FORMAT);
-
-        RETURN_LAST_ERROR_IF_NULL(SetClipboardData(CF_FORMAT, globalHandleData.get()));
-
-        // only free if we failed.
-        // the memory has to remain allocated if we successfully placed it on the clipboard.
-        // Releasing the smart pointer will leave it allocated as we exit scope.
-        globalHandleData.release();
-    }
-
-    return S_OK;
-}
-
-void HwndTerminal::_PasteTextFromClipboard() noexcept
-{
-    // Get paste data from clipboard
-    if (!OpenClipboard(_hwnd.get()))
-    {
-        return;
-    }
-
-    auto ClipboardDataHandle = GetClipboardData(CF_UNICODETEXT);
-    if (ClipboardDataHandle == nullptr)
-    {
-        CloseClipboard();
-        return;
-    }
-
-    if (const auto pwstr = static_cast<PCWCH>(GlobalLock(ClipboardDataHandle)))
-    {
-        _WriteTextToConnection(pwstr);
-    }
-
-    GlobalUnlock(ClipboardDataHandle);
-
-    CloseClipboard();
-}
 
 til::size HwndTerminal::GetFontSize() const noexcept
 {

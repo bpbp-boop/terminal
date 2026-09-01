@@ -36,9 +36,33 @@ typedef struct _TerminalTheme
     COLORREF DefaultBackground;
     COLORREF DefaultForeground;
     COLORREF DefaultSelectionBackground;
+    COLORREF CursorColor;
     uint32_t CursorStyle; // This will be converted to DispatchTypes::CursorStyle (size_t), but C# cannot marshal an enum type and have it fit in a size_t.
     COLORREF ColorTable[16];
 } TerminalTheme, *LPTerminalTheme;
+
+struct HwndTerminalOptions
+{
+    til::size InitialSize{ 80, 25 };
+    int32_t HistorySize{ 9001 };
+    std::wstring FontFamily{ L"Consolas" };
+    int16_t FontSize{ 14 };
+    uint16_t FontWeight{ 400 };
+    bool EnableBuiltinGlyphs{ true };
+    bool EnableColorGlyphs{ true };
+    TerminalTheme Theme{};
+    COLORREF CursorColor{ RGB(255, 255, 255) };
+    bool DetectUrls{ true };
+    bool CopyOnSelect{};
+    bool RightClickPaste{ true };
+    uint32_t CopyFormatting{};
+    uint32_t PasteFiltering{ 3 };
+    bool SnapOnInput{ true };
+    std::wstring WordDelimiters;
+    bool AllowOscClipboard{ true };
+    bool AllowOscNotifications{ true };
+    bool ReadOnly{};
+};
 
 extern "C" {
 __declspec(dllexport) void _stdcall AvoidBuggyTSFConsoleFlags();
@@ -67,7 +91,7 @@ __declspec(dllexport) void _stdcall TerminalKillFocus(void* terminal);
 struct HwndTerminal : ::Microsoft::Console::Types::IControlAccessibilityInfo
 {
 public:
-    HwndTerminal(HWND hwnd) noexcept;
+    HwndTerminal(HWND hwnd, const HwndTerminalOptions& options) noexcept;
 
     HwndTerminal(const HwndTerminal&) = default;
     HwndTerminal(HwndTerminal&&) = default;
@@ -75,17 +99,24 @@ public:
     HwndTerminal& operator=(HwndTerminal&&) = default;
     ~HwndTerminal();
 
-    HRESULT Initialize();
+    HRESULT Initialize(const HwndTerminalOptions& options);
     void Teardown() noexcept;
     void SendOutput(std::wstring_view data);
     HRESULT Refresh(const til::size windowSize, _Out_ til::size* dimensions);
     void RegisterScrollCallback(std::function<void(int, int, int)> callback);
     void RegisterWriteCallback(std::function<void(std::wstring_view)> callback);
     void RegisterWriteCallback(const void _stdcall callback(wchar_t*));
+    void RegisterClipboardCallback(std::function<void(std::wstring_view, std::string_view, std::string_view)> callback);
+    void RegisterPasteRequestCallback(std::function<void()> callback);
+    bool CopySelection(bool clearSelection);
+    void PasteText(std::wstring_view text);
     ::Microsoft::Console::Render::IRenderData* GetRenderData() const noexcept;
     HWND GetHwnd() const noexcept;
 
     static LRESULT CALLBACK HwndTerminalWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) noexcept;
+    void RegisterEventDispatchCallback(std::function<void()> callback);
+    void ApplyInteractionOptions(uint32_t flags, uint32_t copyFormatting, uint32_t pasteFiltering) noexcept;
+    void RequestEventDispatch() const noexcept;
 
 private:
     struct TsfDataProvider : public Microsoft::Console::TSF::IDataProvider
@@ -108,6 +139,14 @@ private:
     FontInfo _actualFont;
     int _currentDpi;
     std::function<void(std::wstring_view)> _pfnWriteCallback;
+    std::function<void(std::wstring_view, std::string_view, std::string_view)> _clipboardCallback;
+    std::function<void()> _pasteRequestCallback;
+    bool _copyOnSelect{};
+    bool _rightClickPaste{ true };
+    bool _readOnly{};
+    uint32_t _copyFormatting{};
+    std::function<void()> _eventDispatchCallback;
+    uint32_t _pasteFiltering{ 3 };
     ::Microsoft::WRL::ComPtr<HwndTerminalAutomationPeer> _uiaProvider;
 
     std::unique_ptr<::Microsoft::Terminal::Core::Terminal> _terminal;
@@ -147,9 +186,6 @@ private:
 
     void _UpdateFont(int newDpi);
     void _WriteTextToConnection(const std::wstring_view text) noexcept;
-    HRESULT _CopyTextToSystemClipboard(wil::zwstring_view text, wil::zstring_view htmlData, wil::zstring_view rtfData) const;
-    HRESULT _CopyToSystemClipboard(wil::zstring_view stringToCopy, LPCWSTR lpszFormat) const;
-    void _PasteTextFromClipboard() noexcept;
 
     void _FocusTSF() noexcept;
 

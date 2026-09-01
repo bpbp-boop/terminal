@@ -16,15 +16,23 @@
 namespace
 {
     thread_local ReseshTerminalHandle callbackHandle{};
-    constexpr wchar_t BuildId[]{ L"terminal-v1.24.11911.0-resesh-abi1" };
-    constexpr size_t MaximumQueuedEventCharacters = 512 * 1024;
+    constexpr wchar_t BuildId[]{ L"terminal-v1.24.11911.0-resesh-abi1.1" };
+    constexpr size_t MaximumQueuedEventUnits = 16 * 1024 * 1024;
     constexpr uint32_t MaximumOutputCharacters = 16 * 1024 * 1024;
+    constexpr uint32_t MaximumClipboardCharacters = 4 * 1024 * 1024;
     constexpr uint32_t MaximumFontFamilyCharacters = 1024;
+    constexpr uint32_t MaximumWordDelimiterCharacters = 4096;
+    constexpr int32_t MaximumHistorySize = 1'000'000;
+    constexpr size_t MaximumQueuedEventCount = 1024;
 
     struct QueuedEvent
     {
+        uint32_t type;
+        uint32_t flags;
         uint64_t sequence;
         std::wstring text;
+        std::string html;
+        std::string rtf;
     };
 
     struct TerminalState
@@ -36,29 +44,54 @@ namespace
         std::mutex eventMutex;
         std::condition_variable callbackFinished;
         std::deque<QueuedEvent> events;
-        size_t queuedCharacters{};
+        size_t queuedUnits{};
         uint64_t nextSequence{ 1 };
         ReseshTerminalEventCallback callback{};
         void* callbackContext{};
         uint32_t callbacksInProgress{};
         bool destroying{};
 
-        void QueueInput(const std::wstring_view input)
+        void QueueEvent(
+            const uint32_t type,
+            std::wstring text = {},
+            std::string html = {},
+            std::string rtf = {},
+            const uint32_t flags = 0)
         {
-            if (input.empty())
+            const auto units = text.size() + html.size() + rtf.size();
+            if (units > MaximumQueuedEventUnits)
             {
                 return;
             }
 
             const std::scoped_lock lock{ eventMutex };
-            if (destroying || input.size() > MaximumQueuedEventCharacters ||
-                queuedCharacters > MaximumQueuedEventCharacters - input.size())
+            if (destroying || events.size() >= MaximumQueuedEventCount ||
+                queuedUnits > MaximumQueuedEventUnits - units)
             {
                 return;
             }
 
-            queuedCharacters += input.size();
-            events.emplace_back(QueuedEvent{ nextSequence++, std::wstring{ input } });
+            queuedUnits += units;
+            events.emplace_back(QueuedEvent{
+                type,
+                flags,
+                nextSequence++,
+                std::move(text),
+                std::move(html),
+                std::move(rtf),
+            });
+            if (terminal)
+            {
+                terminal->RequestEventDispatch();
+            }
+        }
+
+        void QueueInput(const std::wstring_view input)
+        {
+            if (!input.empty())
+            {
+                QueueEvent(ReseshTerminalEventTypeInput, std::wstring{ input });
+            }
         }
 
         void DrainEvents()
@@ -78,7 +111,7 @@ namespace
 
                     queued = std::move(events.front());
                     events.pop_front();
-                    queuedCharacters -= queued.text.size();
+                    queuedUnits -= queued.text.size() + queued.html.size() + queued.rtf.size();
                     currentCallback = callback;
                     currentContext = callbackContext;
                     ++callbacksInProgress;
@@ -88,11 +121,15 @@ namespace
                     sizeof(ReseshTerminalEvent),
                     RESESH_TERMINAL_ABI_MAJOR,
                     RESESH_TERMINAL_ABI_MINOR,
-                    ReseshTerminalEventTypeInput,
-                    0,
+                    queued.type,
+                    queued.flags,
                     queued.sequence,
                     queued.text.data(),
                     gsl::narrow<uint32_t>(queued.text.size()),
+                    queued.html.data(),
+                    gsl::narrow<uint32_t>(queued.html.size()),
+                    queued.rtf.data(),
+                    gsl::narrow<uint32_t>(queued.rtf.size()),
                 };
 
                 const auto previousCallbackHandle = callbackHandle;
@@ -190,21 +227,65 @@ try
     RETURN_HR_IF(E_INVALIDARG, !options->parentHwnd);
     RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_REVISION_MISMATCH),
                  !IsCompatible(options->structSize, options->abiMajor, sizeof(ReseshTerminalCreateOptions)));
+    RETURN_HR_IF(E_INVALIDARG,
+                 options->initialColumns <= 0 || options->initialColumns > SHRT_MAX ||
+                     options->initialRows <= 0 || options->initialRows > SHRT_MAX ||
+                     options->historySize < 0 || options->historySize > MaximumHistorySize ||
+                     options->fontSize <= 0 || options->fontSize > 512 ||
+                     options->fontWeight == 0 || options->fontWeight > 999 ||
+                     options->cursorStyle > 6 ||
+                     options->fontFamilyLength == 0 ||
+                     options->fontFamilyLength > MaximumFontFamilyCharacters ||
+                     !options->fontFamily ||
+                     options->wordDelimitersLength > MaximumWordDelimiterCharacters ||
+                     (options->wordDelimitersLength > 0 && !options->wordDelimiters) ||
+                     (options->copyFormatting & ~0x3u) != 0 ||
+                     (options->pasteFiltering & ~0x3u) != 0 ||
+                     (options->flags & ~0x1ffu) != 0);
 
     *childHwnd = nullptr;
     *terminal = nullptr;
 
+    HwndTerminalOptions creation{};
+    creation.InitialSize = { options->initialColumns, options->initialRows };
+    creation.HistorySize = options->historySize;
+    creation.FontFamily.assign(options->fontFamily, options->fontFamilyLength);
+    creation.FontSize = options->fontSize;
+    creation.FontWeight = options->fontWeight;
+    creation.EnableBuiltinGlyphs = WI_IsFlagSet(options->flags, ReseshTerminalCreateEnableBuiltinGlyphs);
+    creation.EnableColorGlyphs = WI_IsFlagSet(options->flags, ReseshTerminalCreateEnableColorGlyphs);
+    creation.DetectUrls = WI_IsFlagSet(options->flags, ReseshTerminalCreateDetectUrls);
+    creation.CopyOnSelect = WI_IsFlagSet(options->flags, ReseshTerminalCreateCopyOnSelect);
+    creation.RightClickPaste = WI_IsFlagSet(options->flags, ReseshTerminalCreateRightClickPaste);
+    creation.SnapOnInput = WI_IsFlagSet(options->flags, ReseshTerminalCreateSnapOnInput);
+    creation.AllowOscClipboard = WI_IsFlagSet(options->flags, ReseshTerminalCreateAllowOscClipboard);
+    creation.AllowOscNotifications = WI_IsFlagSet(options->flags, ReseshTerminalCreateAllowOscNotifications);
+    creation.ReadOnly = WI_IsFlagSet(options->flags, ReseshTerminalCreateReadOnly);
+    creation.Theme.DefaultBackground = options->defaultBackground;
+    creation.Theme.DefaultForeground = options->defaultForeground;
+    creation.Theme.DefaultSelectionBackground = options->selectionBackground;
+    creation.Theme.CursorStyle = options->cursorStyle;
+    std::copy_n(options->colorTable, std::size(creation.Theme.ColorTable), creation.Theme.ColorTable);
+    creation.Theme.CursorColor = options->cursorColor;
+    creation.CursorColor = options->cursorColor;
+    creation.CopyFormatting = options->copyFormatting;
+    creation.PasteFiltering = options->pasteFiltering;
+    if (options->wordDelimitersLength > 0)
+    {
+        creation.WordDelimiters.assign(options->wordDelimiters, options->wordDelimitersLength);
+    }
+
     auto state = std::make_shared<TerminalState>();
-    void* inner{};
-    void* child{};
-    RETURN_IF_FAILED(CreateTerminal(options->parentHwnd, &child, &inner));
-    const auto innerTerminal = static_cast<HwndTerminal*>(inner);
+    auto innerTerminal = std::make_unique<HwndTerminal>(options->parentHwnd, creation);
+    RETURN_IF_FAILED(innerTerminal->Initialize(creation));
+    const auto child = innerTerminal->GetHwnd();
+    RETURN_HR_IF_NULL(E_FAIL, child);
     auto destroyOnFailure = wil::scope_exit([&]() noexcept {
-        DestroyTerminal(innerTerminal);
+        DestroyTerminal(innerTerminal.release());
     });
 
     state->handle = NewHandle();
-    state->terminal = innerTerminal;
+    state->terminal = innerTerminal.get();
     const std::weak_ptr<TerminalState> weakState{ state };
     state->terminal->RegisterWriteCallback([weakState](const std::wstring_view input) {
         if (const auto locked = weakState.lock())
@@ -212,11 +293,35 @@ try
             locked->QueueInput(input);
         }
     });
+    state->terminal->RegisterClipboardCallback(
+        [weakState](const std::wstring_view text, const std::string_view html, const std::string_view rtf) {
+            if (const auto locked = weakState.lock())
+            {
+                locked->QueueEvent(
+                    ReseshTerminalEventTypeClipboardCopy,
+                    std::wstring{ text },
+                    std::string{ html },
+                    std::string{ rtf });
+            }
+        });
+    state->terminal->RegisterPasteRequestCallback([weakState]() {
+        if (const auto locked = weakState.lock())
+        {
+            locked->QueueEvent(ReseshTerminalEventTypeClipboardPasteRequest);
+        }
+    });
+    state->terminal->RegisterEventDispatchCallback([weakState]() {
+        if (const auto locked = weakState.lock())
+        {
+            locked->DrainEvents();
+        }
+    });
 
     {
         const std::scoped_lock lock{ registryMutex };
         registry.emplace(state->handle, state);
     }
+    innerTerminal.release();
     destroyOnFailure.release();
 
     *childHwnd = static_cast<HWND>(child);
@@ -244,7 +349,7 @@ try
             const std::scoped_lock eventLock{ state->eventMutex };
             state->destroying = true;
             state->events.clear();
-            state->queuedCharacters = 0;
+            state->queuedUnits = 0;
             state->callback = nullptr;
             state->callbackContext = nullptr;
         }
@@ -275,7 +380,7 @@ try
         if (!callback)
         {
             state->events.clear();
-            state->queuedCharacters = 0;
+            state->queuedUnits = 0;
         }
     }
     state->DrainEvents();
@@ -375,10 +480,24 @@ try
     RETURN_HR_IF_NULL(E_INVALIDARG, options);
     RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_REVISION_MISMATCH),
                  !IsCompatible(options->structSize, options->abiMajor, sizeof(ReseshTerminalOptions)));
-    RETURN_HR_IF(E_INVALIDARG,
-                 options->fontFamilyLength > MaximumFontFamilyCharacters ||
-                     (options->fontFamilyLength > 0 && !options->fontFamily));
-    RETURN_HR_IF(E_INVALIDARG, options->fontSize <= 0 || options->dpi <= 0);
+    RETURN_HR_IF(E_INVALIDARG, (options->flags & ~0x3u) != 0);
+    if (WI_IsFlagSet(options->flags, ReseshTerminalOptionTheme))
+    {
+        RETURN_HR_IF(E_INVALIDARG,
+                     options->fontFamilyLength == 0 ||
+                         options->fontFamilyLength > MaximumFontFamilyCharacters ||
+                         !options->fontFamily ||
+                         options->fontSize <= 0 ||
+                         options->cursorStyle > 6 ||
+                         options->dpi <= 0);
+    }
+    if (WI_IsFlagSet(options->flags, ReseshTerminalOptionInteraction))
+    {
+        RETURN_HR_IF(E_INVALIDARG,
+                     (options->interactionFlags & ~0x118u) != 0 ||
+                         (options->copyFormatting & ~0x3u) != 0 ||
+                         (options->pasteFiltering & ~0x3u) != 0);
+    }
 
     return WithTerminal(terminal, [&](TerminalState& state) {
         if ((options->flags & ReseshTerminalOptionTheme) != 0)
@@ -387,10 +506,18 @@ try
             theme.DefaultBackground = options->defaultBackground;
             theme.DefaultForeground = options->defaultForeground;
             theme.DefaultSelectionBackground = options->defaultSelectionBackground;
+            theme.CursorColor = options->cursorColor;
             theme.CursorStyle = options->cursorStyle;
             std::copy_n(options->colorTable, std::size(theme.ColorTable), theme.ColorTable);
             const std::wstring fontFamily{ options->fontFamily, options->fontFamilyLength };
             TerminalSetTheme(state.terminal, theme, fontFamily.c_str(), options->fontSize, options->dpi);
+        }
+        if (WI_IsFlagSet(options->flags, ReseshTerminalOptionInteraction))
+        {
+            state.terminal->ApplyInteractionOptions(
+                options->interactionFlags,
+                options->copyFormatting,
+                options->pasteFiltering);
         }
         return S_OK;
     });
@@ -427,6 +554,31 @@ try
 {
     return WithTerminal(terminal, [&](TerminalState& state) {
         TerminalUserScroll(state.terminal, viewTop);
+        return S_OK;
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalCopySelection(
+    const ReseshTerminalHandle terminal,
+    const uint8_t clearSelection)
+try
+{
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        return state.terminal->CopySelection(clearSelection != 0) ? S_OK : S_FALSE;
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalPasteText(
+    const ReseshTerminalHandle terminal,
+    const wchar_t* const text,
+    const uint32_t textLength)
+try
+{
+    RETURN_HR_IF(E_INVALIDARG, textLength > MaximumClipboardCharacters || (textLength > 0 && !text));
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        state.terminal->PasteText(textLength == 0 ? std::wstring_view{} : std::wstring_view{ text, textLength });
         return S_OK;
     });
 }
