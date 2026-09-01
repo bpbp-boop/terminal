@@ -6,7 +6,7 @@
 
 #include <DefaultSettings.h>
 #include "../inc/ControlProperties.h"
-#include "../../inc/utils.hpp"
+#include "../../types/inc/utils.hpp"
 #include "../../types/inc/colorTable.hpp"
 #include <windowsx.h>
 
