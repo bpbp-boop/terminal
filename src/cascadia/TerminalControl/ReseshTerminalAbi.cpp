@@ -32,6 +32,7 @@ namespace
         ReseshTerminalHandle handle{};
         HwndTerminal* terminal{};
         std::mutex operationMutex;
+        std::mutex drainMutex;
         std::mutex eventMutex;
         std::condition_variable callbackFinished;
         std::deque<QueuedEvent> events;
@@ -62,6 +63,7 @@ namespace
 
         void DrainEvents()
         {
+            const std::scoped_lock drainLock{ drainMutex };
             for (;;)
             {
                 QueuedEvent queued{};
@@ -196,9 +198,13 @@ try
     void* inner{};
     void* child{};
     RETURN_IF_FAILED(CreateTerminal(options->parentHwnd, &child, &inner));
+    const auto innerTerminal = static_cast<HwndTerminal*>(inner);
+    auto destroyOnFailure = wil::scope_exit([&]() noexcept {
+        DestroyTerminal(innerTerminal);
+    });
 
     state->handle = NewHandle();
-    state->terminal = static_cast<HwndTerminal*>(inner);
+    state->terminal = innerTerminal;
     const std::weak_ptr<TerminalState> weakState{ state };
     state->terminal->RegisterWriteCallback([weakState](const std::wstring_view input) {
         if (const auto locked = weakState.lock())
@@ -211,6 +217,7 @@ try
         const std::scoped_lock lock{ registryMutex };
         registry.emplace(state->handle, state);
     }
+    destroyOnFailure.release();
 
     *childHwnd = static_cast<HWND>(child);
     *terminal = state->handle;
@@ -284,7 +291,8 @@ try
 {
     RETURN_HR_IF(E_INVALIDARG, textLength > MaximumOutputCharacters || (textLength > 0 && !text));
     return WithTerminal(terminal, [&](TerminalState& state) {
-        state.terminal->SendOutput(std::wstring_view{ text, textLength });
+        const std::wstring_view output = textLength == 0 ? std::wstring_view{} : std::wstring_view{ text, textLength };
+        state.terminal->SendOutput(output);
         return S_OK;
     });
 }
