@@ -20,6 +20,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: fe1cde61e971d53c9687cf9a46308f8f55da19fa
+          path: .vcpkg
+          fetch-depth: 1
+
+      - name: Bootstrap pinned vcpkg
+        shell: pwsh
+        run: |
+          & .\.vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Restore NuGet dependencies
         shell: pwsh
         run: |
@@ -36,7 +49,7 @@ jobs:
           & $msbuild .\OpenConsole.sln /t:Terminal\Control\Microsoft_Terminal_Control `
             /m /p:Configuration=Release /p:Platform=${{ matrix.architecture }} `
             /p:AppxSymbolPackageEnabled=false /p:OpenConsoleDir="$PWD\" `
-            /p:SolutionDir="$PWD\" /p:VcpkgRoot="$env:VCPKG_INSTALLATION_ROOT"
+            /p:SolutionDir="$PWD\" /p:VcpkgRoot="$PWD\.vcpkg"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build and run resesh ABI tests
@@ -49,7 +62,7 @@ jobs:
           & $msbuild .\src\cascadia\UnitTests_Control\Control.UnitTests.vcxproj `
             /m /p:Configuration=Release /p:Platform=x64 `
             /p:AppxSymbolPackageEnabled=false /p:OpenConsoleDir="$PWD\" `
-            /p:SolutionDir="$PWD\" /p:VcpkgRoot="$env:VCPKG_INSTALLATION_ROOT"
+            /p:SolutionDir="$PWD\" /p:VcpkgRoot="$PWD\.vcpkg"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:RESESH_TEST_DLL = Join-Path $PWD "bin\x64\Release\Microsoft.Terminal.Control\Microsoft.Terminal.Control.dll"
           & .\build\scripts\Run-Tests.ps1 "Control.Unit.Tests.dll" x64 Release `
