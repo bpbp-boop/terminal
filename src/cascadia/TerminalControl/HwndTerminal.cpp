@@ -22,7 +22,10 @@ using namespace ::Microsoft::Terminal::Core;
 
 namespace
 {
-    class HwndTerminalSettings final : public winrt::implements<HwndTerminalSettings, ICoreSettings, ICoreAppearance>
+    class HwndTerminalSettings : public winrt::implements<
+                                     HwndTerminalSettings,
+                                     winrt::Microsoft::Terminal::Core::ICoreSettings,
+                                     winrt::Microsoft::Terminal::Core::ICoreAppearance>
     {
         std::array<winrt::Microsoft::Terminal::Core::Color, COLOR_TABLE_SIZE> _ColorTable{};
 
@@ -294,8 +297,8 @@ static bool RegisterTermClass(HINSTANCE hInstance) noexcept
 }
 
 HwndTerminal::HwndTerminal(HWND parentHwnd, const HwndTerminalOptions& options) noexcept :
-    _desiredFont{ options.FontFamily, 0, options.FontWeight, options.FontSize, CP_UTF8 },
-    _actualFont{ options.FontFamily, 0, options.FontWeight, { 0, options.FontSize }, CP_UTF8, false },
+    _desiredFont{ options.FontFamily, 0, options.FontWeight, static_cast<float>(options.FontSize), CP_UTF8 },
+    _actualFont{ options.FontFamily, 0, options.FontWeight, { 0, static_cast<float>(options.FontSize) }, CP_UTF8, false },
     _currentDpi{ USER_DEFAULT_SCREEN_DPI },
     _copyOnSelect{ options.CopyOnSelect },
     _rightClickPaste{ options.RightClickPaste },
