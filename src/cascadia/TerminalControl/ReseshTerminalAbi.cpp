@@ -221,6 +221,7 @@ CATCH_RETURN()
 HRESULT __stdcall ReseshTerminalDestroy(const ReseshTerminalHandle terminal)
 try
 {
+    RETURN_HR_IF(RPC_E_CANTCALLOUT_ININPUTSYNCCALL, callbackHandle == terminal);
     std::shared_ptr<TerminalState> state;
     {
         const std::scoped_lock lock{ registryMutex };
