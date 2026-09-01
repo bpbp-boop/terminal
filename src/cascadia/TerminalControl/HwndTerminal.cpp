@@ -7,6 +7,7 @@
 #include <DefaultSettings.h>
 #include "../inc/ControlProperties.h"
 #include "../../inc/utils.hpp"
+#include "../../types/inc/colorTable.hpp"
 #include <windowsx.h>
 
 #include "HwndTerminalAutomationPeer.hpp"
@@ -484,6 +485,19 @@ void HwndTerminal::ApplyInteractionOptions(
     _pasteFiltering = pasteFiltering;
 }
 
+void HwndTerminal::SetCursorColor(const COLORREF color)
+{
+    if (!_terminal)
+    {
+        return;
+    }
+
+    const auto lock = _terminal->LockForWriting();
+    auto& renderSettings = _terminal->GetRenderSettings();
+    renderSettings.SetColorTableEntry(TextColor::CURSOR_COLOR, color);
+    renderSettings.SaveDefaultSettings();
+}
+
 bool HwndTerminal::CopySelection(const bool clearSelection)
 {
     if (!_terminal || !_clipboardCallback)
@@ -646,11 +660,9 @@ HRESULT _stdcall CreateTerminal(HWND parentHwnd, _Out_ void** hwnd, _Out_ void**
     options.Theme.DefaultBackground = RGB(12, 12, 12);
     options.Theme.DefaultForeground = RGB(204, 204, 204);
     options.Theme.DefaultSelectionBackground = RGB(38, 79, 120);
-    options.Theme.CursorColor = RGB(255, 255, 255);
+    options.CursorColor = RGB(255, 255, 255);
     options.Theme.CursorStyle = 0;
     const auto colors = ::Microsoft::Console::Utils::CampbellColorTable();
-    std::copy_n(colors.begin(), std::size(options.Theme.ColorTable), options.Theme.ColorTable);
-    options.CursorColor = options.Theme.CursorColor;
     options.WordDelimiters = DEFAULT_WORD_DELIMITERS;
     auto publicTerminal = std::make_unique<HwndTerminal>(parentHwnd, options);
 
@@ -1145,7 +1157,6 @@ void _stdcall TerminalSetTheme(void* terminal, TerminalTheme theme, LPCWSTR font
         renderSettings.SetColorTableEntry(TextColor::DEFAULT_FOREGROUND, theme.DefaultForeground);
         renderSettings.SetColorTableEntry(TextColor::DEFAULT_BACKGROUND, theme.DefaultBackground);
         renderSettings.SetColorTableEntry(TextColor::SELECTION_BACKGROUND, theme.DefaultSelectionBackground);
-        renderSettings.SetColorTableEntry(TextColor::CURSOR_COLOR, theme.CursorColor);
 
         // Set the font colors
         for (size_t tableIndex = 0; tableIndex < 16; tableIndex++)

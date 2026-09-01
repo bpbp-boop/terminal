@@ -266,7 +266,6 @@ try
     creation.Theme.DefaultSelectionBackground = options->selectionBackground;
     creation.Theme.CursorStyle = options->cursorStyle;
     std::copy_n(options->colorTable, std::size(creation.Theme.ColorTable), creation.Theme.ColorTable);
-    creation.Theme.CursorColor = options->cursorColor;
     creation.CursorColor = options->cursorColor;
     creation.CopyFormatting = options->copyFormatting;
     creation.PasteFiltering = options->pasteFiltering;
@@ -506,11 +505,11 @@ try
             theme.DefaultBackground = options->defaultBackground;
             theme.DefaultForeground = options->defaultForeground;
             theme.DefaultSelectionBackground = options->defaultSelectionBackground;
-            theme.CursorColor = options->cursorColor;
             theme.CursorStyle = options->cursorStyle;
             std::copy_n(options->colorTable, std::size(theme.ColorTable), theme.ColorTable);
             const std::wstring fontFamily{ options->fontFamily, options->fontFamilyLength };
             TerminalSetTheme(state.terminal, theme, fontFamily.c_str(), options->fontSize, options->dpi);
+            state.terminal->SetCursorColor(options->cursorColor);
         }
         if (WI_IsFlagSet(options->flags, ReseshTerminalOptionInteraction))
         {

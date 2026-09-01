@@ -36,7 +36,6 @@ typedef struct _TerminalTheme
     COLORREF DefaultBackground;
     COLORREF DefaultForeground;
     COLORREF DefaultSelectionBackground;
-    COLORREF CursorColor;
     uint32_t CursorStyle; // This will be converted to DispatchTypes::CursorStyle (size_t), but C# cannot marshal an enum type and have it fit in a size_t.
     COLORREF ColorTable[16];
 } TerminalTheme, *LPTerminalTheme;
@@ -116,6 +115,7 @@ public:
     static LRESULT CALLBACK HwndTerminalWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) noexcept;
     void RegisterEventDispatchCallback(std::function<void()> callback);
     void ApplyInteractionOptions(uint32_t flags, uint32_t copyFormatting, uint32_t pasteFiltering) noexcept;
+    void SetCursorColor(COLORREF color);
     void RequestEventDispatch() const noexcept;
 
 private:
