@@ -298,7 +298,7 @@ static bool RegisterTermClass(HINSTANCE hInstance) noexcept
 
 HwndTerminal::HwndTerminal(HWND parentHwnd, const HwndTerminalOptions& options) noexcept :
     _desiredFont{ options.FontFamily, 0, options.FontWeight, static_cast<float>(options.FontSize), CP_UTF8 },
-    _actualFont{ options.FontFamily, 0, options.FontWeight, { 0, static_cast<float>(options.FontSize) }, CP_UTF8, false },
+    _actualFont{ options.FontFamily, 0, options.FontWeight, { 0, gsl::narrow_cast<til::CoordType>(options.FontSize) }, CP_UTF8, false },
     _currentDpi{ USER_DEFAULT_SCREEN_DPI },
     _copyOnSelect{ options.CopyOnSelect },
     _rightClickPaste{ options.RightClickPaste },
