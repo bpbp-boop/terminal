@@ -25,6 +25,13 @@ namespace
         VERIFY_IS_NOT_NULL(address);
         return reinterpret_cast<T>(address);
     }
+
+    std::atomic_uint32_t callbackCount{};
+
+    void __stdcall CountCallback(void*, const ReseshTerminalEvent*) noexcept
+    {
+        ++callbackCount;
+    }
 }
 
 namespace ControlUnitTests
@@ -32,11 +39,12 @@ namespace ControlUnitTests
     class ReseshTerminalAbiTests
     {
         BEGIN_TEST_CLASS(ReseshTerminalAbiTests)
-            TEST_CLASS_PROPERTY(L"TestTimeout", L"0:0:10")
+            TEST_CLASS_PROPERTY(L"TestTimeout", L"0:2:0")
         END_TEST_CLASS()
 
         TEST_METHOD(ReportsVersionBuildIdAndRequiredExports);
         TEST_METHOD(RejectsInvalidCreationStructures);
+        TEST_METHOD(CreatesAndDestroys100Terminals);
     };
 
     void ReseshTerminalAbiTests::ReportsVersionBuildIdAndRequiredExports()
@@ -109,5 +117,47 @@ namespace ControlUnitTests
         VERIFY_ARE_EQUAL(
             HRESULT_FROM_WIN32(ERROR_REVISION_MISMATCH),
             create(&options, &child, &terminal));
+    }
+
+    void ReseshTerminalAbiTests::CreatesAndDestroys100Terminals()
+    {
+        const auto module = LoadAbiModule();
+        const auto closeModule = wil::scope_exit([&]() noexcept { FreeLibrary(module); });
+        const auto create = LoadExport<decltype(&ReseshTerminalCreate)>(module, "ReseshTerminalCreate");
+        const auto destroy = LoadExport<decltype(&ReseshTerminalDestroy)>(module, "ReseshTerminalDestroy");
+        const auto registerCallback = LoadExport<decltype(&ReseshTerminalRegisterEventCallback)>(
+            module, "ReseshTerminalRegisterEventCallback");
+        const auto sendCharacter = LoadExport<decltype(&ReseshTerminalSendCharEvent)>(
+            module, "ReseshTerminalSendCharEvent");
+
+        const auto parent = CreateWindowExW(
+            0, L"STATIC", L"", WS_POPUP, 0, 0, 800, 600, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        VERIFY_IS_NOT_NULL(parent);
+        const auto closeParent = wil::scope_exit([&]() noexcept { DestroyWindow(parent); });
+
+        const ReseshTerminalCreateOptions options{
+            sizeof(ReseshTerminalCreateOptions),
+            RESESH_TERMINAL_ABI_MAJOR,
+            RESESH_TERMINAL_ABI_MINOR,
+            parent,
+        };
+        for (auto index = 0; index < 100; ++index)
+        {
+            HWND child{};
+            ReseshTerminalHandle terminal{};
+            VERIFY_SUCCEEDED(create(&options, &child, &terminal));
+            VERIFY_IS_NOT_NULL(child);
+            VERIFY_IS_NOT_NULL(terminal);
+            VERIFY_IS_TRUE(IsWindow(child));
+
+            callbackCount = 0;
+            VERIFY_SUCCEEDED(registerCallback(terminal, CountCallback, nullptr));
+            VERIFY_SUCCEEDED(sendCharacter(terminal, L'x', 0, 0));
+            VERIFY_SUCCEEDED(destroy(terminal));
+            const auto countAfterDestroy = callbackCount.load();
+            VERIFY_ARE_EQUAL(E_HANDLE, sendCharacter(terminal, L'y', 0, 0));
+            VERIFY_ARE_EQUAL(countAfterDestroy, callbackCount.load());
+            VERIFY_IS_FALSE(IsWindow(child));
+        }
     }
 }
