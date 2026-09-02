@@ -751,7 +751,14 @@ bool OutputStateMachineEngine::ActionOscDispatch(const size_t parameter, const s
 {
     if (_oscDispatchCallback)
     {
-        _oscDispatchCallback(parameter, string);
+        try
+        {
+            _oscDispatchCallback(parameter, string);
+        }
+        catch (...)
+        {
+            // Observation must never consume or block normal upstream dispatch.
+        }
     }
 
     switch (parameter)
