@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../../buffer/out/textBuffer.hpp"
+#include "../../buffer/out/search.h"
 #include "../../renderer/inc/FontInfoDesired.hpp"
 #include "../../types/IControlAccessibilityInfo.h"
 #include "../../tsf/Handle.h"
@@ -63,6 +64,14 @@ struct HwndTerminalOptions
     bool ReadOnly{};
 };
 
+struct HwndTerminalSearchState
+{
+    int32_t TotalMatches{};
+    int32_t CurrentMatch{};
+    bool Invalidated{};
+    bool InvalidRegex{};
+};
+
 extern "C" {
 __declspec(dllexport) void _stdcall AvoidBuggyTSFConsoleFlags();
 __declspec(dllexport) HRESULT _stdcall CreateTerminal(HWND parentHwnd, _Out_ void** hwnd, _Out_ void** terminal);
@@ -115,6 +124,17 @@ public:
     void RegisterShellIntegrationMarkCallback(std::function<void(std::wstring_view)> callback);
     void RegisterSystemModeChangedCallback(std::function<void(size_t, bool)> callback);
     void RegisterOscDispatchCallback(std::function<void(size_t, std::wstring_view)> callback);
+    void RegisterOpenLinkCallback(std::function<void(std::wstring_view, uint32_t)> callback);
+    HwndTerminalSearchState Search(
+        std::wstring_view query,
+        bool forward,
+        bool caseSensitive,
+        bool regularExpression,
+        bool executeSearch,
+        bool scrollIntoView,
+        int32_t scrollOffset);
+    void ClearSearch();
+    HwndTerminalSearchState GetSearchState() const noexcept;
     bool CopySelection(bool clearSelection);
     void PasteText(std::wstring_view text);
     ::Microsoft::Console::Render::IRenderData* GetRenderData() const noexcept;
@@ -154,6 +174,13 @@ private:
     bool _readOnly{};
     uint32_t _copyFormatting{};
     std::function<void()> _eventDispatchCallback;
+    std::function<void(std::wstring_view, uint32_t)> _openLinkCallback;
+    ::Search _searcher;
+    HwndTerminalSearchState _searchState;
+    bool _searchActive{};
+    uint16_t _hoveredHyperlinkId{};
+    std::optional<interval_tree::IntervalTree<til::point, size_t>::interval> _hoveredHyperlinkInterval;
+    std::optional<std::pair<std::wstring, uint32_t>> _pressedLink;
     uint32_t _pasteFiltering{ 3 };
     ::Microsoft::WRL::ComPtr<HwndTerminalAutomationPeer> _uiaProvider;
 
@@ -207,6 +234,9 @@ private:
     bool _CanSendVTMouseInput() const noexcept;
     bool _SendMouseEvent(UINT uMsg, WPARAM wParam, LPARAM lParam) noexcept;
 
+    std::optional<std::pair<std::wstring, uint32_t>> _LinkAt(LPARAM lParam);
+    void _UpdateHoveredLink(LPARAM lParam);
+    void _ClearHoveredLink();
     void _SendKeyEvent(WORD vkey, WORD scanCode, WORD flags, bool keyDown) noexcept;
     void _SendCharEvent(wchar_t ch, WORD scanCode, WORD flags) noexcept;
 

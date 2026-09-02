@@ -70,6 +70,8 @@ namespace
 
 static LPCWSTR term_window_class = L"HwndTerminalClass";
 static constexpr UINT WmReseshDispatchEvents = WM_APP + 0x51;
+static constexpr uint32_t Osc8LinkSource = 1;
+static constexpr uint32_t DetectedUrlLinkSource = 2;
 
 STDMETHODIMP HwndTerminal::TsfDataProvider::QueryInterface(REFIID, void**) noexcept
 {
@@ -181,7 +183,8 @@ try
     {
         if (_IsMouseMessage(uMsg))
         {
-            if (publicTerminal->_CanSendVTMouseInput() && publicTerminal->_SendMouseEvent(uMsg, wParam, lParam))
+            const auto shiftPressed = GetKeyState(VK_SHIFT) < 0;
+            if (!shiftPressed && publicTerminal->_CanSendVTMouseInput() && publicTerminal->_SendMouseEvent(uMsg, wParam, lParam))
             {
                 // GH#6401: Capturing the mouse ensures that we get drag/release events
                 // even if the user moves outside the window.
@@ -217,9 +220,30 @@ try
             }
             break;
         case WM_LBUTTONDOWN:
+            publicTerminal->_UpdateHoveredLink(lParam);
+            if (GetKeyState(VK_SHIFT) >= 0)
+            {
+                if (auto link = publicTerminal->_LinkAt(lParam))
+                {
+                    publicTerminal->_pressedLink = std::move(link);
+                    SetCapture(hwnd);
+                    return 0;
+                }
+            }
             LOG_IF_FAILED(publicTerminal->_StartSelection(lParam));
             return 0;
         case WM_LBUTTONUP:
+            if (publicTerminal->_pressedLink)
+            {
+                const auto pressed = std::exchange(publicTerminal->_pressedLink, std::nullopt);
+                ReleaseCapture();
+                if (const auto released = publicTerminal->_LinkAt(lParam);
+                    released && released == pressed && publicTerminal->_openLinkCallback)
+                {
+                    publicTerminal->_openLinkCallback(released->first, released->second);
+                }
+                return 0;
+            }
             if (publicTerminal->_copyOnSelect)
             {
                 publicTerminal->CopySelection(false);
@@ -235,6 +259,17 @@ try
             {
                 LOG_IF_FAILED(publicTerminal->_MoveSelection(lParam));
                 return 0;
+            }
+            publicTerminal->_UpdateHoveredLink(lParam);
+            return 0;
+        case WM_MOUSELEAVE:
+            publicTerminal->_ClearHoveredLink();
+            return 0;
+        case WM_SETCURSOR:
+            if (publicTerminal->_hoveredHyperlinkId != 0 || publicTerminal->_hoveredHyperlinkInterval)
+            {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
             }
             break;
         case WM_RBUTTONDOWN:
@@ -408,6 +443,7 @@ try
     _clipboardCallback = {};
     _pasteRequestCallback = {};
     _eventDispatchCallback = {};
+    _openLinkCallback = {};
 
     if (auto localHwnd{ _hwnd.release() })
     {
@@ -489,6 +525,11 @@ void HwndTerminal::RegisterOscDispatchCallback(std::function<void(size_t, std::w
     {
         _terminal->SetOscDispatchCallback(std::move(callback));
     }
+}
+
+void HwndTerminal::RegisterOpenLinkCallback(std::function<void(std::wstring_view, uint32_t)> callback)
+{
+    _openLinkCallback = std::move(callback);
 }
 
 
@@ -708,6 +749,11 @@ HRESULT HwndTerminal::Refresh(const til::size windowSize, _Out_ til::size* dimen
     // I believe we'll need support for CSI 2J, and additionally I think
     //      we're resetting the viewport to the top
     RETURN_IF_FAILED(_terminal->UserResize(size));
+    _terminal->UpdatePatternsUnderLock();
+    if (_searchActive)
+    {
+        _searchState.Invalidated = true;
+    }
     dimensions->width = size.width;
     dimensions->height = size.height;
 
@@ -722,6 +768,81 @@ void HwndTerminal::SendOutput(std::wstring_view data)
     }
     const auto lock = _terminal->LockForWriting();
     _terminal->Write(data);
+    _terminal->UpdatePatternsUnderLock();
+    if (_searchActive)
+    {
+        _searchState.Invalidated = true;
+    }
+}
+
+HwndTerminalSearchState HwndTerminal::Search(
+    const std::wstring_view query,
+    const bool forward,
+    const bool caseSensitive,
+    const bool regularExpression,
+    const bool executeSearch,
+    const bool scrollIntoView,
+    const int32_t scrollOffset)
+{
+    if (!_terminal)
+    {
+        return {};
+    }
+
+    const auto lock = _terminal->LockForWriting();
+    SearchFlag flags{};
+    WI_SetFlagIf(flags, SearchFlag::CaseInsensitive, !caseSensitive);
+    WI_SetFlagIf(flags, SearchFlag::RegularExpression, regularExpression);
+    const auto invalidated = _searcher.IsStale(*_terminal, query, flags);
+    if (invalidated || executeSearch)
+    {
+        std::vector<til::point_span> oldResults;
+        if (invalidated)
+        {
+            oldResults = _searcher.ExtractResults();
+            _searcher.Reset(*_terminal, query, flags, !forward);
+            _terminal->SetSearchHighlights(_searcher.Results());
+        }
+        if (executeSearch)
+        {
+            _searcher.FindNext(!forward);
+        }
+        _terminal->SetSearchHighlightFocused(gsl::narrow<size_t>(std::max<ptrdiff_t>(0, _searcher.CurrentMatch())));
+        _renderer->TriggerSearchHighlight(oldResults);
+    }
+    if (scrollIntoView)
+    {
+        _terminal->ScrollToSearchHighlight(scrollOffset);
+    }
+
+    _searchActive = !query.empty();
+    _searchState = {
+        .TotalMatches = gsl::narrow<int32_t>(_searcher.Results().size()),
+        .CurrentMatch = gsl::narrow<int32_t>(_searcher.CurrentMatch()),
+        .Invalidated = invalidated,
+        .InvalidRegex = !_searcher.IsOk(),
+    };
+    return _searchState;
+}
+
+void HwndTerminal::ClearSearch()
+{
+    if (!_terminal)
+    {
+        return;
+    }
+    const auto lock = _terminal->LockForWriting();
+    _terminal->SetSearchHighlights({});
+    _searchActive = false;
+    _terminal->SetSearchHighlightFocused(0);
+    _renderer->TriggerSearchHighlight(_searcher.Results());
+    _searcher = {};
+    _searchState = {};
+}
+
+HwndTerminalSearchState HwndTerminal::GetSearchState() const noexcept
+{
+    return _searchState;
 }
 
 void _stdcall AvoidBuggyTSFConsoleFlags()
@@ -886,6 +1007,92 @@ const unsigned int HwndTerminal::_NumberOfClicks(til::point point, std::chrono::
         _multiClickCounter++;
     }
     return _multiClickCounter;
+}
+
+std::optional<std::pair<std::wstring, uint32_t>> HwndTerminal::_LinkAt(const LPARAM lParam)
+{
+    if (!_terminal)
+    {
+        return std::nullopt;
+    }
+    const auto fontSize = _actualFont.GetSize();
+    if (fontSize.area() == 0)
+    {
+        return std::nullopt;
+    }
+    const til::point pixel{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+    if (pixel.x < 0 || pixel.y < 0)
+    {
+        return std::nullopt;
+    }
+    const auto cell = pixel / fontSize;
+    const auto lock = _terminal->LockForReading();
+    if (!_terminal->GetViewport().IsInBounds(cell))
+    {
+        return std::nullopt;
+    }
+    const auto hyperlinkId = _terminal->GetHyperlinkIdAtViewportPosition(cell);
+    auto uri = _terminal->GetHyperlinkAtViewportPosition(cell);
+    if (uri.empty())
+    {
+        return std::nullopt;
+    }
+    return std::pair{ std::move(uri), hyperlinkId == 0 ? DetectedUrlLinkSource : Osc8LinkSource };
+}
+
+void HwndTerminal::_UpdateHoveredLink(const LPARAM lParam)
+{
+    if (!_terminal)
+    {
+        return;
+    }
+    TRACKMOUSEEVENT tracking{
+        .cbSize = sizeof(TRACKMOUSEEVENT),
+        .dwFlags = TME_LEAVE,
+        .hwndTrack = _hwnd.get(),
+    };
+    TrackMouseEvent(&tracking);
+
+    uint16_t hyperlinkId{};
+    std::optional<interval_tree::IntervalTree<til::point, size_t>::interval> interval;
+    const auto fontSize = _actualFont.GetSize();
+    const til::point pixel{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+    if (fontSize.area() != 0 && pixel.x >= 0 && pixel.y >= 0)
+    {
+        const auto cell = pixel / fontSize;
+        const auto lock = _terminal->LockForReading();
+        if (_terminal->GetViewport().IsInBounds(cell))
+        {
+            hyperlinkId = _terminal->GetHyperlinkIdAtViewportPosition(cell);
+            if (hyperlinkId == 0)
+            {
+                interval = _terminal->GetHyperlinkIntervalFromViewportPosition(cell);
+            }
+        }
+    }
+    if (hyperlinkId == _hoveredHyperlinkId && interval == _hoveredHyperlinkInterval)
+    {
+        return;
+    }
+    _hoveredHyperlinkId = hyperlinkId;
+    _hoveredHyperlinkInterval = interval;
+    _renderer->UpdateHyperlinkHoveredId(hyperlinkId);
+    _renderer->UpdateLastHoveredInterval(interval);
+    _renderer->TriggerRedrawAll();
+    SetCursor(LoadCursorW(nullptr, hyperlinkId != 0 || interval ? IDC_HAND : IDC_IBEAM));
+}
+
+void HwndTerminal::_ClearHoveredLink()
+{
+    if (_hoveredHyperlinkId == 0 && !_hoveredHyperlinkInterval)
+    {
+        return;
+    }
+    _hoveredHyperlinkId = 0;
+    _hoveredHyperlinkInterval = std::nullopt;
+    _renderer->UpdateHyperlinkHoveredId(0);
+    _renderer->UpdateLastHoveredInterval(std::nullopt);
+    _renderer->TriggerRedrawAll();
 }
 
 HRESULT HwndTerminal::_StartSelection(LPARAM lParam) noexcept

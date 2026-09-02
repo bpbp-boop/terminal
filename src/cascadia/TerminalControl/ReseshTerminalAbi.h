@@ -7,7 +7,7 @@
 #include <windows.h>
 
 #define RESESH_TERMINAL_ABI_MAJOR 1u
-#define RESESH_TERMINAL_ABI_MINOR 2u
+#define RESESH_TERMINAL_ABI_MINOR 3u
 #define RESESH_TERMINAL_ABI_VERSION ((RESESH_TERMINAL_ABI_MAJOR << 16u) | RESESH_TERMINAL_ABI_MINOR)
 
 #ifdef __cplusplus
@@ -29,12 +29,34 @@ typedef enum ReseshTerminalEventType
     ReseshTerminalEventTypeShellIntegrationMarkChanged = 9,
     ReseshTerminalEventTypeTerminalModeChanged = 10,
     ReseshTerminalEventTypeOscObserved = 11,
+    ReseshTerminalEventTypeOpenLink = 12,
 } ReseshTerminalEventType;
 
 typedef enum ReseshTerminalEventFlags
 {
     ReseshTerminalEventFlagEnabled = 0x00000001u,
 } ReseshTerminalEventFlags;
+
+typedef enum ReseshTerminalLinkSource
+{
+    ReseshTerminalLinkSourceOsc8 = 1,
+    ReseshTerminalLinkSourceDetectedUrl = 2,
+} ReseshTerminalLinkSource;
+
+typedef enum ReseshTerminalSearchFlags
+{
+    ReseshTerminalSearchForward = 0x00000001u,
+    ReseshTerminalSearchCaseSensitive = 0x00000002u,
+    ReseshTerminalSearchRegularExpression = 0x00000004u,
+    ReseshTerminalSearchExecute = 0x00000008u,
+    ReseshTerminalSearchScrollIntoView = 0x00000010u,
+} ReseshTerminalSearchFlags;
+
+typedef enum ReseshTerminalSearchStateFlags
+{
+    ReseshTerminalSearchStateInvalidated = 0x00000001u,
+    ReseshTerminalSearchStateInvalidRegex = 0x00000002u,
+} ReseshTerminalSearchStateFlags;
 
 typedef enum ReseshTerminalOptionFlags
 {
@@ -134,6 +156,27 @@ typedef struct ReseshTerminalOptions
     uint32_t pasteFiltering;
 } ReseshTerminalOptions;
 
+typedef struct ReseshTerminalSearchRequest
+{
+    uint32_t structSize;
+    uint16_t abiMajor;
+    uint16_t abiMinor;
+    const wchar_t* query;
+    uint32_t queryLength;
+    uint32_t flags;
+    int32_t scrollOffset;
+} ReseshTerminalSearchRequest;
+
+typedef struct ReseshTerminalSearchState
+{
+    uint32_t structSize;
+    uint16_t abiMajor;
+    uint16_t abiMinor;
+    int32_t totalMatches;
+    int32_t currentMatch;
+    uint32_t flags;
+} ReseshTerminalSearchState;
+
 typedef void(__stdcall* ReseshTerminalEventCallback)(
     void* context,
     const ReseshTerminalEvent* eventData);
@@ -193,6 +236,14 @@ __declspec(dllexport) HRESULT __stdcall ReseshTerminalPasteText(
     ReseshTerminalHandle terminal,
     const wchar_t* text,
     uint32_t textLength);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalSearch(
+    ReseshTerminalHandle terminal,
+    const ReseshTerminalSearchRequest* request,
+    ReseshTerminalSearchState* state);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalClearSearch(ReseshTerminalHandle terminal);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalGetSearchState(
+    ReseshTerminalHandle terminal,
+    ReseshTerminalSearchState* state);
 
 #ifdef __cplusplus
 }

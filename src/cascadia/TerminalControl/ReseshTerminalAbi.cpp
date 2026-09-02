@@ -16,9 +16,10 @@
 namespace
 {
     thread_local ReseshTerminalHandle callbackHandle{};
-    constexpr wchar_t BuildId[]{ L"terminal-v1.24.11911.0-resesh-abi1.2" };
+    constexpr wchar_t BuildId[]{ L"terminal-v1.24.11911.0-resesh-abi1.3" };
     constexpr size_t MaximumQueuedEventUnits = 16 * 1024 * 1024;
     constexpr uint32_t MaximumOutputCharacters = 16 * 1024 * 1024;
+    constexpr uint32_t MaximumSearchCharacters = 1024 * 1024;
     constexpr uint32_t MaximumClipboardCharacters = 4 * 1024 * 1024;
     constexpr uint32_t MaximumFontFamilyCharacters = 1024;
     constexpr uint32_t MaximumWordDelimiterCharacters = 4096;
@@ -389,6 +390,18 @@ try
             }
         }
     });
+    state->terminal->RegisterOpenLinkCallback([weakState](const std::wstring_view uri, const uint32_t source) {
+        if (const auto locked = weakState.lock())
+        {
+            locked->QueueEvent(
+                ReseshTerminalEventTypeOpenLink,
+                std::wstring{ uri },
+                {},
+                {},
+                0,
+                source);
+        }
+    });
     state->terminal->RegisterEventDispatchCallback([weakState]() {
         if (const auto locked = weakState.lock())
         {
@@ -658,6 +671,78 @@ try
     RETURN_HR_IF(E_INVALIDARG, textLength > MaximumClipboardCharacters || (textLength > 0 && !text));
     return WithTerminal(terminal, [&](TerminalState& state) {
         state.terminal->PasteText(textLength == 0 ? std::wstring_view{} : std::wstring_view{ text, textLength });
+        return S_OK;
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalSearch(
+    const ReseshTerminalHandle terminal,
+    const ReseshTerminalSearchRequest* const request,
+    ReseshTerminalSearchState* const result)
+try
+{
+    RETURN_HR_IF_NULL(E_INVALIDARG, request);
+    RETURN_HR_IF_NULL(E_INVALIDARG, result);
+    RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_REVISION_MISMATCH),
+                 !IsCompatible(request->structSize, request->abiMajor, sizeof(ReseshTerminalSearchRequest)));
+    RETURN_HR_IF(E_INVALIDARG,
+                 request->queryLength > MaximumSearchCharacters ||
+                     (request->queryLength > 0 && !request->query) ||
+                     (request->flags & ~0x1fu) != 0);
+    return WithTerminal(terminal, [&](TerminalState& terminalState) {
+        const auto query = request->queryLength == 0
+                               ? std::wstring_view{}
+                               : std::wstring_view{ request->query, request->queryLength };
+        const auto searchState = terminalState.terminal->Search(
+            query,
+            WI_IsFlagSet(request->flags, ReseshTerminalSearchForward),
+            WI_IsFlagSet(request->flags, ReseshTerminalSearchCaseSensitive),
+            WI_IsFlagSet(request->flags, ReseshTerminalSearchRegularExpression),
+            WI_IsFlagSet(request->flags, ReseshTerminalSearchExecute),
+            WI_IsFlagSet(request->flags, ReseshTerminalSearchScrollIntoView),
+            request->scrollOffset);
+        *result = {
+            sizeof(ReseshTerminalSearchState),
+            RESESH_TERMINAL_ABI_MAJOR,
+            RESESH_TERMINAL_ABI_MINOR,
+            searchState.TotalMatches,
+            searchState.CurrentMatch,
+            (searchState.Invalidated ? ReseshTerminalSearchStateInvalidated : 0u) |
+                (searchState.InvalidRegex ? ReseshTerminalSearchStateInvalidRegex : 0u),
+        };
+        return S_OK;
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalClearSearch(const ReseshTerminalHandle terminal)
+try
+{
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        state.terminal->ClearSearch();
+        return S_OK;
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalGetSearchState(
+    const ReseshTerminalHandle terminal,
+    ReseshTerminalSearchState* const result)
+try
+{
+    RETURN_HR_IF_NULL(E_INVALIDARG, result);
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        const auto searchState = state.terminal->GetSearchState();
+        *result = {
+            sizeof(ReseshTerminalSearchState),
+            RESESH_TERMINAL_ABI_MAJOR,
+            RESESH_TERMINAL_ABI_MINOR,
+            searchState.TotalMatches,
+            searchState.CurrentMatch,
+            (searchState.Invalidated ? ReseshTerminalSearchStateInvalidated : 0u) |
+                (searchState.InvalidRegex ? ReseshTerminalSearchStateInvalidRegex : 0u),
+        };
         return S_OK;
     });
 }

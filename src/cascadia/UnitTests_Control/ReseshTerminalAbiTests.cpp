@@ -192,6 +192,7 @@ namespace ControlUnitTests
         TEST_METHOD(HonorsOscClipboardPolicy);
         TEST_METHOD(FiltersNormalAndBracketedPaste);
         TEST_METHOD(EmitsTypedEventsAndObservesOscWithoutConsuming);
+        TEST_METHOD(SearchesAndRaisesLinks);
     };
 
     void ReseshTerminalAbiTests::ReportsVersionBuildIdAndRequiredExports()
@@ -216,6 +217,9 @@ namespace ControlUnitTests
             "ReseshTerminalUserScroll",
             "ReseshTerminalCopySelection",
             "ReseshTerminalPasteText",
+            "ReseshTerminalSearch",
+            "ReseshTerminalClearSearch",
+            "ReseshTerminalGetSearchState",
         };
         for (const auto name : requiredExports)
         {
@@ -238,7 +242,7 @@ namespace ControlUnitTests
         uint32_t written{};
         VERIFY_SUCCEEDED(getBuildId(buildId.data(), required, &written));
         VERIFY_ARE_EQUAL(required, written);
-        VERIFY_IS_TRUE(buildId.starts_with(L"terminal-v1.24.11911.0-resesh-abi1.2"));
+        VERIFY_IS_TRUE(buildId.starts_with(L"terminal-v1.24.11911.0-resesh-abi1.3"));
     }
 
     void ReseshTerminalAbiTests::RejectsInvalidCreationStructures()
@@ -656,5 +660,112 @@ namespace ControlUnitTests
         VERIFY_SUCCEEDED(sendOutput(terminal, unterminated, gsl::narrow<uint32_t>(std::size(unterminated) - 1)));
         VERIFY_ARE_EQUAL(countBeforeUnterminated, events.Snapshot().size());
         VERIFY_IS_TRUE(events.ReentryResult() == E_HANDLE);
+    }
+}
+
+namespace ControlUnitTests
+{
+    void ReseshTerminalAbiTests::SearchesAndRaisesLinks()
+    {
+        const auto module = LoadAbiModule();
+        const auto closeModule = wil::scope_exit([&]() noexcept { FreeLibrary(module); });
+        const auto create = LoadExport<decltype(&ReseshTerminalCreate)>(module, "ReseshTerminalCreate");
+        const auto destroy = LoadExport<decltype(&ReseshTerminalDestroy)>(module, "ReseshTerminalDestroy");
+        const auto registerCallback = LoadExport<decltype(&ReseshTerminalRegisterEventCallback)>(
+            module, "ReseshTerminalRegisterEventCallback");
+        const auto sendOutput = LoadExport<decltype(&ReseshTerminalSendOutput)>(module, "ReseshTerminalSendOutput");
+        const auto search = LoadExport<decltype(&ReseshTerminalSearch)>(module, "ReseshTerminalSearch");
+        const auto clearSearch = LoadExport<decltype(&ReseshTerminalClearSearch)>(module, "ReseshTerminalClearSearch");
+        const auto getSearchState = LoadExport<decltype(&ReseshTerminalGetSearchState)>(
+            module, "ReseshTerminalGetSearchState");
+        const auto parent = CreateParentWindow();
+        const auto closeParent = wil::scope_exit([&]() noexcept { DestroyWindow(parent); });
+        const auto options = DefaultOptions(parent);
+        HWND child{};
+        ReseshTerminalHandle terminal{};
+        VERIFY_SUCCEEDED(create(&options, &child, &terminal));
+        const auto closeTerminal = wil::scope_exit([&]() noexcept { VERIFY_SUCCEEDED(destroy(terminal)); });
+
+        EventLog events;
+        VERIFY_SUCCEEDED(registerCallback(terminal, CaptureCallback, &events));
+        constexpr wchar_t output[]{ L"alpha ALPHA\r\n" };
+        VERIFY_SUCCEEDED(sendOutput(terminal, output, gsl::narrow<uint32_t>(std::size(output) - 1)));
+
+        constexpr wchar_t query[]{ L"alpha" };
+        ReseshTerminalSearchRequest request{
+            sizeof(ReseshTerminalSearchRequest),
+            RESESH_TERMINAL_ABI_MAJOR,
+            RESESH_TERMINAL_ABI_MINOR,
+            query,
+            gsl::narrow<uint32_t>(std::size(query) - 1),
+            ReseshTerminalSearchForward | ReseshTerminalSearchExecute | ReseshTerminalSearchScrollIntoView,
+            0,
+        };
+        ReseshTerminalSearchState result{};
+        VERIFY_SUCCEEDED(search(terminal, &request, &result));
+        VERIFY_ARE_EQUAL(2, result.totalMatches);
+        VERIFY_IS_TRUE(result.currentMatch >= 0);
+        VERIFY_ARE_EQUAL(0u, result.flags & ReseshTerminalSearchStateInvalidRegex);
+
+        request.flags |= ReseshTerminalSearchCaseSensitive;
+        VERIFY_SUCCEEDED(search(terminal, &request, &result));
+        VERIFY_ARE_EQUAL(1, result.totalMatches);
+
+        constexpr wchar_t invalidRegex[]{ L"[" };
+        request.query = invalidRegex;
+        request.queryLength = 1;
+        request.flags = ReseshTerminalSearchForward | ReseshTerminalSearchRegularExpression;
+        VERIFY_SUCCEEDED(search(terminal, &request, &result));
+        VERIFY_ARE_NOT_EQUAL(0u, result.flags & ReseshTerminalSearchStateInvalidRegex);
+        VERIFY_SUCCEEDED(getSearchState(terminal, &result));
+        VERIFY_ARE_NOT_EQUAL(0u, result.flags & ReseshTerminalSearchStateInvalidRegex);
+        VERIFY_SUCCEEDED(clearSearch(terminal));
+        VERIFY_SUCCEEDED(getSearchState(terminal, &result));
+        VERIFY_ARE_EQUAL(0, result.totalMatches);
+
+        std::wstring manyMatches;
+        manyMatches.reserve(3 * 1100);
+        for (auto index = 0; index < 1100; ++index)
+        {
+            manyMatches.append(L"x\r\n");
+        }
+        VERIFY_SUCCEEDED(sendOutput(
+            terminal,
+            manyMatches.data(),
+            gsl::narrow<uint32_t>(manyMatches.size())));
+        constexpr wchar_t manyQuery[]{ L"x" };
+        request.query = manyQuery;
+        request.queryLength = 1;
+        request.flags = ReseshTerminalSearchForward | ReseshTerminalSearchExecute;
+        VERIFY_SUCCEEDED(search(terminal, &request, &result));
+        VERIFY_ARE_EQUAL(1100, result.totalMatches);
+        VERIFY_SUCCEEDED(clearSearch(terminal));
+
+        constexpr wchar_t osc8[]{ L"\x1b[2J\x1b[H\x1b]8;;https://example.test/explicit\x1b\\explicit\x1b]8;;\x1b\\" };
+        VERIFY_SUCCEEDED(sendOutput(terminal, osc8, gsl::narrow<uint32_t>(std::size(osc8) - 1)));
+        SendMessageW(child, WM_LBUTTONDOWN, 0, MAKELPARAM(2, 2));
+        SendMessageW(child, WM_LBUTTONUP, 0, MAKELPARAM(2, 2));
+        PumpPostedMessages();
+        const auto captured = events.Snapshot();
+        const auto link = std::find_if(captured.begin(), captured.end(), [](const auto& item) {
+            return item.type == ReseshTerminalEventTypeOpenLink;
+        });
+        VERIFY_IS_TRUE(link != captured.end());
+        VERIFY_ARE_EQUAL(std::wstring{ L"https://example.test/explicit" }, link->text);
+        VERIFY_ARE_EQUAL(static_cast<int64_t>(ReseshTerminalLinkSourceOsc8), link->value0);
+
+        constexpr wchar_t detected[]{ L"\x1b[2J\x1b[Hhttps://example.test/detected" };
+        VERIFY_SUCCEEDED(sendOutput(terminal, detected, gsl::narrow<uint32_t>(std::size(detected) - 1)));
+        SendMessageW(child, WM_MOUSEMOVE, 0, MAKELPARAM(2, 2));
+        SendMessageW(child, WM_LBUTTONDOWN, 0, MAKELPARAM(2, 2));
+        SendMessageW(child, WM_LBUTTONUP, 0, MAKELPARAM(2, 2));
+        PumpPostedMessages();
+        const auto withDetected = events.Snapshot();
+        const auto detectedLink = std::find_if(withDetected.begin(), withDetected.end(), [](const auto& item) {
+            return item.type == ReseshTerminalEventTypeOpenLink &&
+                   item.value0 == ReseshTerminalLinkSourceDetectedUrl;
+        });
+        VERIFY_IS_TRUE(detectedLink != withDetected.end());
+        VERIFY_ARE_EQUAL(std::wstring{ L"https://example.test/detected" }, detectedLink->text);
     }
 }
