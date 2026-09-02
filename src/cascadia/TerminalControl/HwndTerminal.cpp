@@ -1117,7 +1117,17 @@ HwndTerminalPromptProbe HwndTerminal::BeginPromptProbe()
             _readRows(start, cursor.y),
         };
     }
-    if (data.reseshId != 0 || data.category != MarkCategory::Default)
+    if (data.category != MarkCategory::Default)
+    {
+        return {
+            0,
+            _markGeneration,
+            { 0, start },
+            cursor,
+            _readRows(start, cursor.y),
+        };
+    }
+    if (data.reseshId != 0)
     {
         return {};
     }
