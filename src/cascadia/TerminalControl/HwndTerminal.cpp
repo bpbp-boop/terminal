@@ -1117,7 +1117,7 @@ HwndTerminalPromptProbe HwndTerminal::BeginPromptProbe()
             _readRows(start, cursor.y),
         };
     }
-    if (data.reseshId != 0)
+    if (data.reseshId != 0 || data.category != MarkCategory::Default)
     {
         return {};
     }
@@ -1187,7 +1187,10 @@ bool HwndTerminal::DiscardPromptProbe(const uint64_t id)
     }
     data->reseshId = 0;
     data->reseshKind = 0;
-    if (data->reseshBookmarkId == 0)
+    if (data->reseshBookmarkId == 0 &&
+        data->category == MarkCategory::Default &&
+        !data->color &&
+        !data->exitCode)
     {
         bufferRow.SetScrollbarData(std::nullopt);
     }
@@ -1241,7 +1244,10 @@ bool HwndTerminal::RemoveBookmark(const uint64_t id)
     }
     data->reseshBookmarkId = 0;
     data->reseshBookmarkColor.reset();
-    if (data->reseshId == 0)
+    if (data->reseshId == 0 &&
+        data->category == MarkCategory::Default &&
+        !data->color &&
+        !data->exitCode)
     {
         bufferRow.SetScrollbarData(std::nullopt);
     }
@@ -1269,7 +1275,10 @@ void HwndTerminal::ClearBookmarks()
             data.reseshBookmarkId = 0;
             data.reseshBookmarkColor.reset();
             auto& row = _terminal->GetTextBuffer().GetMutableRowByOffset(mark.row);
-            if (data.reseshId == 0)
+            if (data.reseshId == 0 &&
+                data.category == MarkCategory::Default &&
+                !data.color &&
+                !data.exitCode)
             {
                 row.SetScrollbarData(std::nullopt);
             }
