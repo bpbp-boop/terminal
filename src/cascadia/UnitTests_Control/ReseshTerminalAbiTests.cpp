@@ -844,11 +844,11 @@ namespace ControlUnitTests
         std::vector<ReseshTerminalMarkRecord> marks(requiredMarks);
         VERIFY_SUCCEEDED(getMarks(terminal, marks.data(), gsl::narrow<uint32_t>(marks.size()), &requiredMarks));
         const auto application = std::find_if(marks.begin(), marks.end(), [](const auto& mark) {
-            return mark.kind == ReseshTerminalMarkKindApplicationCommand;
+            return mark.kind == ReseshTerminalMarkApplicationCommand;
         });
         VERIFY_IS_TRUE(application != marks.end());
         const auto bookmark = std::find_if(marks.begin(), marks.end(), [](const auto& mark) {
-            return mark.kind == ReseshTerminalMarkKindBookmark;
+            return mark.kind == ReseshTerminalMarkBookmark;
         });
         VERIFY_IS_TRUE(bookmark != marks.end());
         VERIFY_ARE_EQUAL(bookmarkId, bookmark->id);
