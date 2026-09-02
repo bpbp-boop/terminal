@@ -107,6 +107,14 @@ public:
     void RegisterWriteCallback(const void _stdcall callback(wchar_t*));
     void RegisterClipboardCallback(std::function<void(std::wstring_view, std::string_view, std::string_view)> callback);
     void RegisterPasteRequestCallback(std::function<void()> callback);
+    void RegisterTitleChangedCallback(std::function<void(std::wstring_view)> callback);
+    void RegisterWorkingDirectoryChangedCallback(std::function<void(std::wstring_view)> callback);
+    void RegisterBellCallback(std::function<void()> callback);
+    void RegisterBufferChangedCallback(std::function<void(int, int, int)> callback);
+    void RegisterAlternateBufferChangedCallback(std::function<void(bool)> callback);
+    void RegisterShellIntegrationMarkCallback(std::function<void(std::wstring_view)> callback);
+    void RegisterSystemModeChangedCallback(std::function<void(size_t, bool)> callback);
+    void RegisterOscDispatchCallback(std::function<void(size_t, std::wstring_view)> callback);
     bool CopySelection(bool clearSelection);
     void PasteText(std::wstring_view text);
     ::Microsoft::Console::Render::IRenderData* GetRenderData() const noexcept;

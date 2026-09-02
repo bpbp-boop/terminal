@@ -231,6 +231,11 @@ public:
     void SetTitleChangedCallback(std::function<void(std::wstring_view)> pfn) noexcept;
     void SetCopyToClipboardCallback(std::function<void(wil::zwstring_view)> pfn) noexcept;
     void SetScrollPositionChangedCallback(std::function<void(const int, const int, const int)> pfn) noexcept;
+    void SetWorkingDirectoryChangedCallback(std::function<void(std::wstring_view)> pfn) noexcept;
+    void SetAlternateBufferChangedCallback(std::function<void(bool)> pfn) noexcept;
+    void SetShellIntegrationMarkCallback(std::function<void(std::wstring_view)> pfn) noexcept;
+    void SetSystemModeChangedCallback(std::function<void(Mode, bool)> pfn) noexcept;
+    void SetOscDispatchCallback(std::function<void(size_t, std::wstring_view)> pfn) noexcept;
     void TaskbarProgressChangedCallback(std::function<void()> pfn) noexcept;
     void SetShowWindowCallback(std::function<void(bool)> pfn) noexcept;
     void SetPlayMidiNoteCallback(std::function<void(const int, const int, const std::chrono::microseconds)> pfn) noexcept;
@@ -352,6 +357,10 @@ private:
     std::function<void(std::wstring_view, const til::CoordType)> _pfnSearchMissingCommand;
     std::function<void()> _pfnClearQuickFix;
     std::function<void(int32_t, int32_t)> _pfnWindowSizeChanged;
+    std::function<void(std::wstring_view)> _pfnWorkingDirectoryChanged;
+    std::function<void(bool)> _pfnAlternateBufferChanged;
+    std::function<void(std::wstring_view)> _pfnShellIntegrationMark;
+    std::function<void(Mode, bool)> _pfnSystemModeChanged;
 
     RenderSettings _renderSettings;
     std::unique_ptr<::Microsoft::Console::VirtualTerminal::StateMachine> _stateMachine;

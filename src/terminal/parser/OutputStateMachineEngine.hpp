@@ -23,6 +23,7 @@ namespace Microsoft::Console::VirtualTerminal
         static constexpr size_t MAX_URL_LENGTH = 2 * 1048576; // 2MB, like iTerm2
 
         OutputStateMachineEngine(std::unique_ptr<ITermDispatch> pDispatch);
+        void SetOscDispatchCallback(std::function<void(size_t, std::wstring_view)> callback) noexcept;
 
         bool EncounteredWin32InputModeSequence() const noexcept override;
 
@@ -52,6 +53,7 @@ namespace Microsoft::Console::VirtualTerminal
 
     private:
         std::unique_ptr<ITermDispatch> _dispatch;
+        std::function<void(size_t, std::wstring_view)> _oscDispatchCallback;
         wchar_t _lastPrintedChar;
 
         enum EscActionCodes : uint64_t

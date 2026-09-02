@@ -396,6 +396,14 @@ try
         // These callbacks have a dangling reference to `this`; clear them before destruction.
         _terminal->SetWriteInputCallback(nullptr);
         _terminal->SetCopyToClipboardCallback(nullptr);
+        _terminal->SetWarningBellCallback(nullptr);
+        _terminal->SetTitleChangedCallback(nullptr);
+        _terminal->SetScrollPositionChangedCallback(nullptr);
+        _terminal->SetWorkingDirectoryChangedCallback(nullptr);
+        _terminal->SetAlternateBufferChangedCallback(nullptr);
+        _terminal->SetShellIntegrationMarkCallback(nullptr);
+        _terminal->SetSystemModeChangedCallback(nullptr);
+        _terminal->SetOscDispatchCallback(nullptr);
     }
     _clipboardCallback = {};
     _pasteRequestCallback = {};
@@ -419,6 +427,70 @@ void HwndTerminal::RegisterScrollCallback(std::function<void(int, int, int)> cal
     }
     _terminal->SetScrollPositionChangedCallback(callback);
 }
+void HwndTerminal::RegisterTitleChangedCallback(std::function<void(std::wstring_view)> callback)
+{
+    if (_terminal)
+    {
+        _terminal->SetTitleChangedCallback(std::move(callback));
+    }
+}
+
+void HwndTerminal::RegisterWorkingDirectoryChangedCallback(std::function<void(std::wstring_view)> callback)
+{
+    if (_terminal)
+    {
+        _terminal->SetWorkingDirectoryChangedCallback(std::move(callback));
+    }
+}
+
+void HwndTerminal::RegisterBellCallback(std::function<void()> callback)
+{
+    if (_terminal)
+    {
+        _terminal->SetWarningBellCallback(std::move(callback));
+    }
+}
+
+void HwndTerminal::RegisterBufferChangedCallback(std::function<void(int, int, int)> callback)
+{
+    RegisterScrollCallback(std::move(callback));
+}
+
+void HwndTerminal::RegisterAlternateBufferChangedCallback(std::function<void(bool)> callback)
+{
+    if (_terminal)
+    {
+        _terminal->SetAlternateBufferChangedCallback(std::move(callback));
+    }
+}
+
+void HwndTerminal::RegisterShellIntegrationMarkCallback(std::function<void(std::wstring_view)> callback)
+{
+    if (_terminal)
+    {
+        _terminal->SetShellIntegrationMarkCallback(std::move(callback));
+    }
+}
+
+void HwndTerminal::RegisterSystemModeChangedCallback(std::function<void(size_t, bool)> callback)
+{
+    if (_terminal)
+    {
+        _terminal->SetSystemModeChangedCallback(
+            [callback = std::move(callback)](const ITerminalApi::Mode mode, const bool enabled) {
+                callback(static_cast<size_t>(mode), enabled);
+            });
+    }
+}
+
+void HwndTerminal::RegisterOscDispatchCallback(std::function<void(size_t, std::wstring_view)> callback)
+{
+    if (_terminal)
+    {
+        _terminal->SetOscDispatchCallback(std::move(callback));
+    }
+}
+
 
 void HwndTerminal::_WriteTextToConnection(const std::wstring_view input) noexcept
 {

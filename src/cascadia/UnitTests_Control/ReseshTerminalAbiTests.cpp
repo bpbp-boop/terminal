@@ -85,17 +85,29 @@ namespace
         std::wstring text;
         std::string html;
         std::string rtf;
+        int64_t value0{};
+        int64_t value1{};
+        int64_t value2{};
     };
 
     struct EventLog
     {
         std::mutex mutex;
         std::vector<CapturedEvent> events;
+        ReseshTerminalHandle reentryTerminal{};
+        decltype(&ReseshTerminalSendOutput) reentrySendOutput{};
+        std::optional<HRESULT> reentryResult;
 
         std::vector<CapturedEvent> Snapshot()
         {
             const std::scoped_lock lock{ mutex };
             return events;
+        }
+
+        std::optional<HRESULT> ReentryResult()
+        {
+            const std::scoped_lock lock{ mutex };
+            return reentryResult;
         }
     };
 
@@ -114,8 +126,15 @@ namespace
             eventData->textLength == 0 ? std::wstring{} : std::wstring{ eventData->text, eventData->textLength },
             eventData->htmlLength == 0 ? std::string{} : std::string{ eventData->html, eventData->htmlLength },
             eventData->rtfLength == 0 ? std::string{} : std::string{ eventData->rtf, eventData->rtfLength },
+            eventData->value0,
+            eventData->value1,
+            eventData->value2,
         };
         auto& log = *static_cast<EventLog*>(context);
+        if (log.reentryTerminal && log.reentrySendOutput && !log.reentryResult)
+        {
+            log.reentryResult = log.reentrySendOutput(log.reentryTerminal, L"x", 1);
+        }
         const std::scoped_lock lock{ log.mutex };
         log.events.emplace_back(std::move(captured));
     }
@@ -172,6 +191,7 @@ namespace ControlUnitTests
         TEST_METHOD(HonorsCopyOnSelectAndRightClickSettings);
         TEST_METHOD(HonorsOscClipboardPolicy);
         TEST_METHOD(FiltersNormalAndBracketedPaste);
+        TEST_METHOD(EmitsTypedEventsAndObservesOscWithoutConsuming);
     };
 
     void ReseshTerminalAbiTests::ReportsVersionBuildIdAndRequiredExports()
@@ -218,7 +238,7 @@ namespace ControlUnitTests
         uint32_t written{};
         VERIFY_SUCCEEDED(getBuildId(buildId.data(), required, &written));
         VERIFY_ARE_EQUAL(required, written);
-        VERIFY_IS_TRUE(buildId.starts_with(L"terminal-v1.24.11911.0-resesh-abi1.1"));
+        VERIFY_IS_TRUE(buildId.starts_with(L"terminal-v1.24.11911.0-resesh-abi1.2"));
     }
 
     void ReseshTerminalAbiTests::RejectsInvalidCreationStructures()
@@ -475,11 +495,17 @@ namespace ControlUnitTests
             return captured;
         };
 
-        VERIFY_IS_TRUE(runPolicy(false).empty());
+        const auto blockedEvents = runPolicy(false);
+        VERIFY_ARE_EQUAL(static_cast<size_t>(1), blockedEvents.size());
+        VERIFY_ARE_EQUAL(static_cast<uint32_t>(ReseshTerminalEventTypeOscObserved), blockedEvents[0].type);
+        VERIFY_ARE_EQUAL(static_cast<int64_t>(52), blockedEvents[0].value0);
+        VERIFY_ARE_EQUAL(std::wstring{ L"c;Y2xpcA==" }, blockedEvents[0].text);
+
         const auto allowedEvents = runPolicy(true);
-        VERIFY_ARE_EQUAL(static_cast<size_t>(1), allowedEvents.size());
-        VERIFY_ARE_EQUAL(static_cast<uint32_t>(ReseshTerminalEventTypeClipboardCopy), allowedEvents[0].type);
-        VERIFY_ARE_EQUAL(std::wstring{ L"clip" }, allowedEvents[0].text);
+        VERIFY_ARE_EQUAL(static_cast<size_t>(2), allowedEvents.size());
+        VERIFY_ARE_EQUAL(static_cast<uint32_t>(ReseshTerminalEventTypeOscObserved), allowedEvents[0].type);
+        VERIFY_ARE_EQUAL(static_cast<uint32_t>(ReseshTerminalEventTypeClipboardCopy), allowedEvents[1].type);
+        VERIFY_ARE_EQUAL(std::wstring{ L"clip" }, allowedEvents[1].text);
     }
 
     void ReseshTerminalAbiTests::FiltersNormalAndBracketedPaste()
@@ -536,5 +562,99 @@ namespace ControlUnitTests
         VERIFY_SUCCEEDED(setOptions(terminal, &interaction));
         VERIFY_SUCCEEDED(pasteText(terminal, L"blocked", 7));
         VERIFY_ARE_EQUAL(countBeforeReadOnly, events.Snapshot().size());
+    }
+    void ReseshTerminalAbiTests::EmitsTypedEventsAndObservesOscWithoutConsuming()
+    {
+        const auto module = LoadAbiModule();
+        const auto closeModule = wil::scope_exit([&]() noexcept { FreeLibrary(module); });
+        const auto create = LoadExport<decltype(&ReseshTerminalCreate)>(module, "ReseshTerminalCreate");
+        const auto destroy = LoadExport<decltype(&ReseshTerminalDestroy)>(module, "ReseshTerminalDestroy");
+        const auto registerCallback = LoadExport<decltype(&ReseshTerminalRegisterEventCallback)>(
+            module, "ReseshTerminalRegisterEventCallback");
+        const auto sendOutput = LoadExport<decltype(&ReseshTerminalSendOutput)>(
+            module, "ReseshTerminalSendOutput");
+        const auto parent = CreateParentWindow();
+        const auto closeParent = wil::scope_exit([&]() noexcept { DestroyWindow(parent); });
+        const auto options = DefaultOptions(parent);
+
+        HWND child{};
+        ReseshTerminalHandle terminal{};
+        VERIFY_SUCCEEDED(create(&options, &child, &terminal));
+        const auto closeTerminal = wil::scope_exit([&]() noexcept { LOG_IF_FAILED(destroy(terminal)); });
+        EventLog events;
+        events.reentryTerminal = terminal;
+        events.reentrySendOutput = sendOutput;
+        VERIFY_SUCCEEDED(registerCallback(terminal, CaptureCallback, &events));
+
+        constexpr wchar_t chunkedOsc[]{ L"\x1b]7;file://host/tmp\x1b\\" };
+        for (size_t index = 0; index + 1 < std::size(chunkedOsc) - 1; ++index)
+        {
+            VERIFY_SUCCEEDED(sendOutput(terminal, &chunkedOsc[index], 1));
+            VERIFY_IS_TRUE(events.Snapshot().empty());
+        }
+        VERIFY_SUCCEEDED(sendOutput(terminal, &chunkedOsc[std::size(chunkedOsc) - 2], 1));
+
+        constexpr wchar_t metadata[]{
+            L"\x1b]2;phase3-title\x07"
+            L"\x1b]9;9;\"D:/Work\"\x1b\\"
+            L"\x07"
+            L"\x1b]3008;start=id;type=shell;cwd=/tmp\x1b\\"
+            L"\x1b]7377;agent;id=codex;state=working\x07"
+            L"\x1b]9;4;1\x1b\\"
+            L"\x1b]777;notify;done\x07"
+            L"\x1b[?1049h\x1b[?1049l"
+            L"\x1b[?2004h\x1b[?2004l"
+            L"\x1b]133;A\x07PS> \x1b]133;B\x07echo phase3\x1b]133;C\x07\r\n"
+            L"\x1b]133;D;0\x07"
+        };
+        VERIFY_SUCCEEDED(sendOutput(terminal, metadata, gsl::narrow<uint32_t>(std::size(metadata) - 1)));
+
+        const auto captured = events.Snapshot();
+        VERIFY_IS_GREATER_THAN(captured.size(), static_cast<size_t>(10));
+        for (size_t index = 0; index < captured.size(); ++index)
+        {
+            VERIFY_ARE_EQUAL(gsl::narrow<uint64_t>(index + 1), captured[index].sequence);
+        }
+
+        const auto findEvent = [&](const uint32_t type, const int64_t value0 = INT64_MIN) {
+            return std::find_if(captured.begin(), captured.end(), [&](const CapturedEvent& event) {
+                return event.type == type && (value0 == INT64_MIN || event.value0 == value0);
+            });
+        };
+        const auto osc7 = findEvent(ReseshTerminalEventTypeOscObserved, 7);
+        VERIFY_IS_TRUE(osc7 != captured.end());
+        VERIFY_ARE_EQUAL(std::wstring{ L"file://host/tmp" }, osc7->text);
+
+        const auto oscTitle = findEvent(ReseshTerminalEventTypeOscObserved, 2);
+        const auto title = findEvent(ReseshTerminalEventTypeTitleChanged);
+        VERIFY_IS_TRUE(oscTitle != captured.end() && title != captured.end());
+        VERIFY_ARE_EQUAL(std::wstring{ L"phase3-title" }, title->text);
+        VERIFY_ARE_EQUAL(oscTitle->sequence + 1, title->sequence);
+
+        const auto osc9 = std::find_if(captured.begin(), captured.end(), [](const CapturedEvent& event) {
+            return event.type == ReseshTerminalEventTypeOscObserved &&
+                   event.value0 == 9 &&
+                   event.text == L"9;\"D:/Work\"";
+        });
+        const auto workingDirectory = findEvent(ReseshTerminalEventTypeWorkingDirectoryChanged);
+        VERIFY_IS_TRUE(osc9 != captured.end() && workingDirectory != captured.end());
+        VERIFY_ARE_EQUAL(std::wstring{ L"D:/Work" }, workingDirectory->text);
+        VERIFY_ARE_EQUAL(osc9->sequence + 1, workingDirectory->sequence);
+
+        VERIFY_IS_TRUE(findEvent(ReseshTerminalEventTypeBell) != captured.end());
+        VERIFY_IS_TRUE(findEvent(ReseshTerminalEventTypeBufferOrViewportChanged) != captured.end());
+        VERIFY_IS_TRUE(findEvent(ReseshTerminalEventTypeAlternateBufferChanged) != captured.end());
+        VERIFY_IS_TRUE(findEvent(ReseshTerminalEventTypeTerminalModeChanged, 2) != captured.end());
+        VERIFY_IS_TRUE(findEvent(ReseshTerminalEventTypeShellIntegrationMarkChanged) != captured.end());
+        VERIFY_IS_TRUE(findEvent(ReseshTerminalEventTypeOscObserved, 133) != captured.end());
+        VERIFY_IS_TRUE(findEvent(ReseshTerminalEventTypeOscObserved, 3008) != captured.end());
+        VERIFY_IS_TRUE(findEvent(ReseshTerminalEventTypeOscObserved, 7377) != captured.end());
+        VERIFY_IS_TRUE(findEvent(ReseshTerminalEventTypeOscObserved, 777) != captured.end());
+
+        const auto countBeforeUnterminated = captured.size();
+        constexpr wchar_t unterminated[]{ L"\x1b]7377;agent;state=working" };
+        VERIFY_SUCCEEDED(sendOutput(terminal, unterminated, gsl::narrow<uint32_t>(std::size(unterminated) - 1)));
+        VERIFY_ARE_EQUAL(countBeforeUnterminated, events.Snapshot().size());
+        VERIFY_IS_TRUE(events.ReentryResult() == E_HANDLE);
     }
 }

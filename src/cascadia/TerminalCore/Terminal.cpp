@@ -1152,6 +1152,32 @@ void Terminal::SetScrollPositionChangedCallback(std::function<void(const int, co
 {
     _pfnScrollPositionChanged.swap(pfn);
 }
+void Terminal::SetWorkingDirectoryChangedCallback(std::function<void(std::wstring_view)> pfn) noexcept
+{
+    _pfnWorkingDirectoryChanged.swap(pfn);
+}
+
+void Terminal::SetAlternateBufferChangedCallback(std::function<void(bool)> pfn) noexcept
+{
+    _pfnAlternateBufferChanged.swap(pfn);
+}
+
+void Terminal::SetShellIntegrationMarkCallback(std::function<void(std::wstring_view)> pfn) noexcept
+{
+    _pfnShellIntegrationMark.swap(pfn);
+}
+
+void Terminal::SetSystemModeChangedCallback(std::function<void(Mode, bool)> pfn) noexcept
+{
+    _pfnSystemModeChanged.swap(pfn);
+}
+
+void Terminal::SetOscDispatchCallback(std::function<void(size_t, std::wstring_view)> pfn) noexcept
+{
+    auto& engine = reinterpret_cast<OutputStateMachineEngine&>(_stateMachine->Engine());
+    engine.SetOscDispatchCallback(std::move(pfn));
+}
+
 
 // Method Description:
 // - Allows settings a callback for settings the taskbar progress indicator

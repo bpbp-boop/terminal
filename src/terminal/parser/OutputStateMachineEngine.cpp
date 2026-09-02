@@ -23,6 +23,11 @@ OutputStateMachineEngine::OutputStateMachineEngine(std::unique_ptr<ITermDispatch
 {
     THROW_HR_IF_NULL(E_INVALIDARG, _dispatch.get());
 }
+void OutputStateMachineEngine::SetOscDispatchCallback(std::function<void(size_t, std::wstring_view)> callback) noexcept
+{
+    _oscDispatchCallback.swap(callback);
+}
+
 
 bool OutputStateMachineEngine::EncounteredWin32InputModeSequence() const noexcept
 {
@@ -744,6 +749,11 @@ IStateMachineEngine::StringHandler OutputStateMachineEngine::ActionDcsDispatch(c
 // - true if we handled the dispatch.
 bool OutputStateMachineEngine::ActionOscDispatch(const size_t parameter, const std::wstring_view string)
 {
+    if (_oscDispatchCallback)
+    {
+        _oscDispatchCallback(parameter, string);
+    }
+
     switch (parameter)
     {
     case OscActionCodes::SetIconAndWindowTitle:

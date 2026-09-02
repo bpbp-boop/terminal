@@ -16,7 +16,7 @@
 namespace
 {
     thread_local ReseshTerminalHandle callbackHandle{};
-    constexpr wchar_t BuildId[]{ L"terminal-v1.24.11911.0-resesh-abi1.1" };
+    constexpr wchar_t BuildId[]{ L"terminal-v1.24.11911.0-resesh-abi1.2" };
     constexpr size_t MaximumQueuedEventUnits = 16 * 1024 * 1024;
     constexpr uint32_t MaximumOutputCharacters = 16 * 1024 * 1024;
     constexpr uint32_t MaximumClipboardCharacters = 4 * 1024 * 1024;
@@ -33,6 +33,9 @@ namespace
         std::wstring text;
         std::string html;
         std::string rtf;
+        int64_t value0{};
+        int64_t value1{};
+        int64_t value2{};
     };
 
     struct TerminalState
@@ -56,7 +59,10 @@ namespace
             std::wstring text = {},
             std::string html = {},
             std::string rtf = {},
-            const uint32_t flags = 0)
+            const uint32_t flags = 0,
+            const int64_t value0 = 0,
+            const int64_t value1 = 0,
+            const int64_t value2 = 0)
         {
             const auto units = text.size() + html.size() + rtf.size();
             if (units > MaximumQueuedEventUnits)
@@ -79,6 +85,9 @@ namespace
                 std::move(text),
                 std::move(html),
                 std::move(rtf),
+                value0,
+                value1,
+                value2,
             });
             if (terminal)
             {
@@ -130,6 +139,9 @@ namespace
                     gsl::narrow<uint32_t>(queued.html.size()),
                     queued.rtf.data(),
                     gsl::narrow<uint32_t>(queued.rtf.size()),
+                    queued.value0,
+                    queued.value1,
+                    queued.value2,
                 };
 
                 const auto previousCallbackHandle = callbackHandle;
@@ -307,6 +319,74 @@ try
         if (const auto locked = weakState.lock())
         {
             locked->QueueEvent(ReseshTerminalEventTypeClipboardPasteRequest);
+        }
+    });
+    state->terminal->RegisterTitleChangedCallback([weakState](const std::wstring_view title) {
+        if (const auto locked = weakState.lock())
+        {
+            locked->QueueEvent(ReseshTerminalEventTypeTitleChanged, std::wstring{ title });
+        }
+    });
+    state->terminal->RegisterWorkingDirectoryChangedCallback([weakState](const std::wstring_view uri) {
+        if (const auto locked = weakState.lock())
+        {
+            locked->QueueEvent(ReseshTerminalEventTypeWorkingDirectoryChanged, std::wstring{ uri });
+        }
+    });
+    state->terminal->RegisterBellCallback([weakState]() {
+        if (const auto locked = weakState.lock())
+        {
+            locked->QueueEvent(ReseshTerminalEventTypeBell);
+        }
+    });
+    state->terminal->RegisterBufferChangedCallback([weakState](const int top, const int height, const int bottom) {
+        if (const auto locked = weakState.lock())
+        {
+            locked->QueueEvent(ReseshTerminalEventTypeBufferOrViewportChanged, {}, {}, {}, 0, top, height, bottom);
+        }
+    });
+    state->terminal->RegisterAlternateBufferChangedCallback([weakState](const bool enabled) {
+        if (const auto locked = weakState.lock())
+        {
+            locked->QueueEvent(
+                ReseshTerminalEventTypeAlternateBufferChanged,
+                {},
+                {},
+                {},
+                enabled ? ReseshTerminalEventFlagEnabled : 0);
+        }
+    });
+    state->terminal->RegisterShellIntegrationMarkCallback([weakState](const std::wstring_view command) {
+        if (const auto locked = weakState.lock())
+        {
+            locked->QueueEvent(ReseshTerminalEventTypeShellIntegrationMarkChanged, std::wstring{ command });
+        }
+    });
+    state->terminal->RegisterSystemModeChangedCallback([weakState](const size_t mode, const bool enabled) {
+        if (const auto locked = weakState.lock())
+        {
+            locked->QueueEvent(
+                ReseshTerminalEventTypeTerminalModeChanged,
+                {},
+                {},
+                {},
+                enabled ? ReseshTerminalEventFlagEnabled : 0,
+                gsl::narrow_cast<int64_t>(mode));
+        }
+    });
+    state->terminal->RegisterOscDispatchCallback([weakState](const size_t code, const std::wstring_view payload) {
+        if (code <= gsl::narrow_cast<size_t>(INT64_MAX))
+        {
+            if (const auto locked = weakState.lock())
+            {
+                locked->QueueEvent(
+                    ReseshTerminalEventTypeOscObserved,
+                    std::wstring{ payload },
+                    {},
+                    {},
+                    0,
+                    gsl::narrow_cast<int64_t>(code));
+            }
         }
     });
     state->terminal->RegisterEventDispatchCallback([weakState]() {

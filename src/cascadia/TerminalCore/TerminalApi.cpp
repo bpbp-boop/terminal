@@ -62,7 +62,14 @@ CATCH_LOG()
 void Terminal::SetSystemMode(const Mode mode, const bool enabled) noexcept
 {
     _assertLocked();
-    _systemMode.set(mode, enabled);
+    if (_systemMode.test(mode) != enabled)
+    {
+        _systemMode.set(mode, enabled);
+        if (_pfnSystemModeChanged)
+        {
+            _pfnSystemModeChanged(mode, enabled);
+        }
+    }
 }
 
 bool Terminal::GetSystemMode(const Mode mode) const noexcept
@@ -78,7 +85,10 @@ void Terminal::ReturnAnswerback()
 
 void Terminal::WarningBell()
 {
-    _pfnWarningBell();
+    if (_pfnWarningBell)
+    {
+        _pfnWarningBell();
+    }
 }
 
 void Terminal::SetWindowTitle(const std::wstring_view title)
@@ -91,7 +101,10 @@ void Terminal::SetWindowTitle(const std::wstring_view title)
         {
             _title.emplace(title);
         }
-        _pfnTitleChanged(GetConsoleTitle());
+        if (_pfnTitleChanged)
+        {
+            _pfnTitleChanged(GetConsoleTitle());
+        }
     }
 }
 
@@ -227,6 +240,10 @@ void Terminal::SetWorkingDirectory(std::wstring_view uri)
     }
 
     _workingDirectory = uri;
+    if (_pfnWorkingDirectoryChanged)
+    {
+        _pfnWorkingDirectoryChanged(_workingDirectory);
+    }
 }
 
 void Terminal::PlayMidiNote(const int noteNumber, const int velocity, const std::chrono::microseconds duration)
@@ -274,6 +291,10 @@ void Terminal::UseAlternateScreenBuffer(const TextAttribute& attrs)
     // GH#3321: Make sure we let the TerminalInput know that we switched
     // buffers. This might affect how we interpret certain mouse events.
     _getTerminalInput().UseAlternateScreenBuffer();
+    if (_pfnAlternateBufferChanged)
+    {
+        _pfnAlternateBufferChanged(true);
+    }
 
     // Update scrollbars
     _NotifyScrollEvent();
@@ -331,6 +352,10 @@ void Terminal::UseMainScreenBuffer()
     // GH#3321: Make sure we let the TerminalInput know that we switched
     // buffers. This might affect how we interpret certain mouse events.
     _getTerminalInput().UseMainScreenBuffer();
+    if (_pfnAlternateBufferChanged)
+    {
+        _pfnAlternateBufferChanged(false);
+    }
 
     // Update scrollbars
     _NotifyScrollEvent();
@@ -418,6 +443,10 @@ void Terminal::NotifyBufferRotation(const int delta)
 
 void Terminal::NotifyShellIntegrationMark()
 {
+    if (_pfnShellIntegrationMark)
+    {
+        _pfnShellIntegrationMark(CurrentCommand());
+    }
     // Notify the scrollbar that marks have been added so it can refresh the mark indicators
     _NotifyScrollEvent();
 }

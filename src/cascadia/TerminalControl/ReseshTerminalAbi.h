@@ -7,7 +7,7 @@
 #include <windows.h>
 
 #define RESESH_TERMINAL_ABI_MAJOR 1u
-#define RESESH_TERMINAL_ABI_MINOR 1u
+#define RESESH_TERMINAL_ABI_MINOR 2u
 #define RESESH_TERMINAL_ABI_VERSION ((RESESH_TERMINAL_ABI_MAJOR << 16u) | RESESH_TERMINAL_ABI_MINOR)
 
 #ifdef __cplusplus
@@ -21,7 +21,20 @@ typedef enum ReseshTerminalEventType
     ReseshTerminalEventTypeInput = 1,
     ReseshTerminalEventTypeClipboardCopy = 2,
     ReseshTerminalEventTypeClipboardPasteRequest = 3,
+    ReseshTerminalEventTypeTitleChanged = 4,
+    ReseshTerminalEventTypeWorkingDirectoryChanged = 5,
+    ReseshTerminalEventTypeBell = 6,
+    ReseshTerminalEventTypeBufferOrViewportChanged = 7,
+    ReseshTerminalEventTypeAlternateBufferChanged = 8,
+    ReseshTerminalEventTypeShellIntegrationMarkChanged = 9,
+    ReseshTerminalEventTypeTerminalModeChanged = 10,
+    ReseshTerminalEventTypeOscObserved = 11,
 } ReseshTerminalEventType;
+
+typedef enum ReseshTerminalEventFlags
+{
+    ReseshTerminalEventFlagEnabled = 0x00000001u,
+} ReseshTerminalEventFlags;
 
 typedef enum ReseshTerminalOptionFlags
 {
@@ -94,6 +107,9 @@ typedef struct ReseshTerminalEvent
     uint32_t htmlLength;
     const char* rtf;
     uint32_t rtfLength;
+    int64_t value0;
+    int64_t value1;
+    int64_t value2;
 } ReseshTerminalEvent;
 
 typedef struct ReseshTerminalOptions
