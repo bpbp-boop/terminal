@@ -193,6 +193,7 @@ namespace ControlUnitTests
         TEST_METHOD(FiltersNormalAndBracketedPaste);
         TEST_METHOD(EmitsTypedEventsAndObservesOscWithoutConsuming);
         TEST_METHOD(SearchesAndRaisesLinks);
+        TEST_METHOD(DiscoversCommandsAndManagesRulerMarks);
     };
 
     void ReseshTerminalAbiTests::ReportsVersionBuildIdAndRequiredExports()
@@ -220,6 +221,16 @@ namespace ControlUnitTests
             "ReseshTerminalSearch",
             "ReseshTerminalClearSearch",
             "ReseshTerminalGetSearchState",
+            "ReseshTerminalGetMarks",
+            "ReseshTerminalGetSearchRows",
+            "ReseshTerminalGetMarkText",
+            "ReseshTerminalScrollToMark",
+            "ReseshTerminalGetCursorLogicalLine",
+            "ReseshTerminalCreateApplicationMark",
+            "ReseshTerminalDiscardPromptProbe",
+            "ReseshTerminalAddBookmark",
+            "ReseshTerminalRemoveBookmark",
+            "ReseshTerminalClearBookmarks",
         };
         for (const auto name : requiredExports)
         {
@@ -242,7 +253,7 @@ namespace ControlUnitTests
         uint32_t written{};
         VERIFY_SUCCEEDED(getBuildId(buildId.data(), required, &written));
         VERIFY_ARE_EQUAL(required, written);
-        VERIFY_IS_TRUE(buildId.starts_with(L"terminal-v1.24.11911.0-resesh-abi1.3"));
+        VERIFY_IS_TRUE(buildId.starts_with(L"terminal-v1.24.11911.0-resesh-abi1.4"));
     }
 
     void ReseshTerminalAbiTests::RejectsInvalidCreationStructures()
@@ -767,5 +778,116 @@ namespace ControlUnitTests
         });
         VERIFY_IS_TRUE(detectedLink != withDetected.end());
         VERIFY_ARE_EQUAL(std::wstring{ L"https://example.test/detected" }, detectedLink->text);
+    }
+
+    void ReseshTerminalAbiTests::DiscoversCommandsAndManagesRulerMarks()
+    {
+        const auto module = LoadAbiModule();
+        const auto closeModule = wil::scope_exit([&]() noexcept { FreeLibrary(module); });
+        const auto create = LoadExport<decltype(&ReseshTerminalCreate)>(module, "ReseshTerminalCreate");
+        const auto destroy = LoadExport<decltype(&ReseshTerminalDestroy)>(module, "ReseshTerminalDestroy");
+        const auto sendOutput = LoadExport<decltype(&ReseshTerminalSendOutput)>(module, "ReseshTerminalSendOutput");
+        const auto search = LoadExport<decltype(&ReseshTerminalSearch)>(module, "ReseshTerminalSearch");
+        const auto getMarks = LoadExport<decltype(&ReseshTerminalGetMarks)>(module, "ReseshTerminalGetMarks");
+        const auto getSearchRows = LoadExport<decltype(&ReseshTerminalGetSearchRows)>(module, "ReseshTerminalGetSearchRows");
+        const auto getMarkText = LoadExport<decltype(&ReseshTerminalGetMarkText)>(module, "ReseshTerminalGetMarkText");
+        const auto scrollToMark = LoadExport<decltype(&ReseshTerminalScrollToMark)>(module, "ReseshTerminalScrollToMark");
+        const auto getCursorLogicalLine = LoadExport<decltype(&ReseshTerminalGetCursorLogicalLine)>(
+            module, "ReseshTerminalGetCursorLogicalLine");
+        const auto createApplicationMark = LoadExport<decltype(&ReseshTerminalCreateApplicationMark)>(
+            module, "ReseshTerminalCreateApplicationMark");
+        const auto addBookmark = LoadExport<decltype(&ReseshTerminalAddBookmark)>(module, "ReseshTerminalAddBookmark");
+        const auto removeBookmark = LoadExport<decltype(&ReseshTerminalRemoveBookmark)>(
+            module, "ReseshTerminalRemoveBookmark");
+        const auto clearBookmarks = LoadExport<decltype(&ReseshTerminalClearBookmarks)>(
+            module, "ReseshTerminalClearBookmarks");
+        const auto parent = CreateParentWindow();
+        const auto closeParent = wil::scope_exit([&]() noexcept { DestroyWindow(parent); });
+        const auto options = DefaultOptions(parent);
+        HWND child{};
+        ReseshTerminalHandle terminal{};
+        VERIFY_SUCCEEDED(create(&options, &child, &terminal));
+        const auto closeTerminal = wil::scope_exit([&]() noexcept { VERIFY_SUCCEEDED(destroy(terminal)); });
+
+        constexpr wchar_t commandLine[]{ L"PS C:\\work> Get-Date" };
+        VERIFY_SUCCEEDED(sendOutput(terminal, commandLine, gsl::narrow<uint32_t>(std::size(commandLine) - 1)));
+
+        ReseshTerminalCursorLogicalLine line{};
+        uint32_t requiredText{};
+        VERIFY_ARE_EQUAL(
+            HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER),
+            getCursorLogicalLine(terminal, &line, nullptr, 0, &requiredText));
+        VERIFY_IS_GREATER_THAN(requiredText, 1u);
+        std::wstring lineText(requiredText, L'\0');
+        VERIFY_SUCCEEDED(getCursorLogicalLine(terminal, &line, lineText.data(), requiredText, &requiredText));
+        VERIFY_IS_TRUE(line.probeId != 0);
+        VERIFY_IS_TRUE(lineText.starts_with(commandLine));
+
+        constexpr wchar_t command[]{ L"Get-Date" };
+        VERIFY_SUCCEEDED(createApplicationMark(
+            terminal,
+            line.probeId,
+            command,
+            gsl::narrow<uint32_t>(std::size(command) - 1),
+            0,
+            1));
+
+        uint64_t bookmarkId{};
+        VERIFY_SUCCEEDED(addBookmark(terminal, -1, 0x0000CCFF, 1, &bookmarkId));
+        VERIFY_IS_TRUE(bookmarkId != 0);
+
+        uint32_t requiredMarks{};
+        VERIFY_ARE_EQUAL(
+            HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER),
+            getMarks(terminal, nullptr, 0, &requiredMarks));
+        VERIFY_ARE_EQUAL(2u, requiredMarks);
+        std::vector<ReseshTerminalMarkRecord> marks(requiredMarks);
+        VERIFY_SUCCEEDED(getMarks(terminal, marks.data(), gsl::narrow<uint32_t>(marks.size()), &requiredMarks));
+        const auto application = std::find_if(marks.begin(), marks.end(), [](const auto& mark) {
+            return mark.kind == ReseshTerminalMarkKindApplicationCommand;
+        });
+        VERIFY_IS_TRUE(application != marks.end());
+        const auto bookmark = std::find_if(marks.begin(), marks.end(), [](const auto& mark) {
+            return mark.kind == ReseshTerminalMarkKindBookmark;
+        });
+        VERIFY_IS_TRUE(bookmark != marks.end());
+        VERIFY_ARE_EQUAL(bookmarkId, bookmark->id);
+        VERIFY_SUCCEEDED(scrollToMark(terminal, application->id));
+
+        uint32_t requiredCommand{};
+        VERIFY_ARE_EQUAL(
+            HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER),
+            getMarkText(terminal, application->id, 0, nullptr, 0, &requiredCommand));
+        std::wstring commandText(requiredCommand, L'\0');
+        VERIFY_SUCCEEDED(getMarkText(
+            terminal, application->id, 0, commandText.data(), requiredCommand, &requiredCommand));
+        VERIFY_IS_TRUE(commandText.starts_with(command));
+
+        ReseshTerminalSearchRequest request{
+            sizeof(ReseshTerminalSearchRequest),
+            RESESH_TERMINAL_ABI_MAJOR,
+            RESESH_TERMINAL_ABI_MINOR,
+            command,
+            gsl::narrow<uint32_t>(std::size(command) - 1),
+            ReseshTerminalSearchForward | ReseshTerminalSearchExecute,
+            0,
+        };
+        ReseshTerminalSearchState searchState{};
+        VERIFY_SUCCEEDED(search(terminal, &request, &searchState));
+        uint32_t requiredRows{};
+        VERIFY_ARE_EQUAL(
+            HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER),
+            getSearchRows(terminal, nullptr, 0, &requiredRows));
+        VERIFY_IS_GREATER_THAN(requiredRows, 0u);
+        std::vector<int32_t> rows(requiredRows);
+        VERIFY_SUCCEEDED(getSearchRows(terminal, rows.data(), gsl::narrow<uint32_t>(rows.size()), &requiredRows));
+
+        VERIFY_SUCCEEDED(removeBookmark(terminal, bookmarkId));
+        VERIFY_SUCCEEDED(clearBookmarks(terminal));
+        requiredMarks = 0;
+        VERIFY_ARE_EQUAL(
+            HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER),
+            getMarks(terminal, nullptr, 0, &requiredMarks));
+        VERIFY_ARE_EQUAL(1u, requiredMarks);
     }
 }

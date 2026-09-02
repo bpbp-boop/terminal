@@ -9,6 +9,8 @@
 #include "../../types/IControlAccessibilityInfo.h"
 #include "../../tsf/Handle.h"
 
+#include <unordered_map>
+
 namespace Microsoft::Console::Render::Atlas
 {
     class AtlasEngine;
@@ -70,6 +72,44 @@ struct HwndTerminalSearchState
     int32_t CurrentMatch{};
     bool Invalidated{};
     bool InvalidRegex{};
+};
+
+enum class HwndTerminalMarkKind : uint32_t
+{
+    ExactCommand = 1,
+    ApplicationCommand = 2,
+    Bookmark = 3,
+    Probe = 4,
+};
+
+struct HwndTerminalMark
+{
+    uint64_t Id{};
+    uint64_t Generation{};
+    HwndTerminalMarkKind Kind{};
+    uint32_t Category{};
+    uint32_t Color{};
+    std::optional<uint32_t> ExitCode;
+    til::point Start{};
+    til::point PromptEnd{};
+    std::optional<til::point> CommandEnd;
+    std::optional<til::point> OutputEnd;
+};
+
+struct HwndTerminalPromptProbe
+{
+    uint64_t Id{};
+    uint64_t Generation{};
+    til::point Start{};
+    til::point Cursor{};
+    std::wstring Text;
+};
+
+struct HwndTerminalApplicationMark
+{
+    std::wstring Command;
+    til::point CommandStart{};
+    til::point CommandEnd{};
 };
 
 extern "C" {
@@ -135,6 +175,17 @@ public:
         int32_t scrollOffset);
     void ClearSearch();
     HwndTerminalSearchState GetSearchState() const noexcept;
+    std::vector<HwndTerminalMark> GetMarks();
+    std::vector<int32_t> GetSearchRows() const;
+    std::wstring GetMarkText(uint64_t id, bool includeOutput);
+    bool ScrollToMark(uint64_t id);
+    HwndTerminalPromptProbe BeginPromptProbe();
+    bool CommitPromptProbe(uint64_t id, std::wstring_view command, std::optional<uint32_t> exitCode);
+    bool DiscardPromptProbe(uint64_t id);
+    uint64_t AddBookmark(int32_t row, std::optional<til::color> color);
+    bool RemoveBookmark(uint64_t id);
+    void ClearBookmarks();
+    uint64_t MarkGeneration() const noexcept;
     bool CopySelection(bool clearSelection);
     void PasteText(std::wstring_view text);
     ::Microsoft::Console::Render::IRenderData* GetRenderData() const noexcept;
@@ -182,6 +233,9 @@ private:
     std::optional<interval_tree::IntervalTree<til::point, size_t>::interval> _hoveredHyperlinkInterval;
     std::optional<std::pair<std::wstring, uint32_t>> _pressedLink;
     uint32_t _pasteFiltering{ 3 };
+    uint64_t _nextMarkId{ 1 };
+    uint64_t _markGeneration{ 1 };
+    std::unordered_map<uint64_t, HwndTerminalApplicationMark> _applicationCommands;
     ::Microsoft::WRL::ComPtr<HwndTerminalAutomationPeer> _uiaProvider;
 
     std::unique_ptr<::Microsoft::Terminal::Core::Terminal> _terminal;
@@ -237,6 +291,11 @@ private:
     std::optional<std::pair<std::wstring, uint32_t>> _LinkAt(LPARAM lParam);
     void _UpdateHoveredLink(LPARAM lParam);
     void _ClearHoveredLink();
+    uint64_t _ensureRowMarkId(til::CoordType row, uint8_t kind);
+    std::optional<til::CoordType> _findRowByMarkId(uint64_t id) const;
+    std::wstring _readRows(til::CoordType first, til::CoordType last) const;
+    til::CoordType _logicalLineStart(til::CoordType row) const;
+    til::CoordType _logicalLineEnd(til::CoordType row) const;
     void _SendKeyEvent(WORD vkey, WORD scanCode, WORD flags, bool keyDown) noexcept;
     void _SendCharEvent(wchar_t ch, WORD scanCode, WORD flags) noexcept;
 

@@ -16,7 +16,7 @@
 namespace
 {
     thread_local ReseshTerminalHandle callbackHandle{};
-    constexpr wchar_t BuildId[]{ L"terminal-v1.24.11911.0-resesh-abi1.3" };
+    constexpr wchar_t BuildId[]{ L"terminal-v1.24.11911.0-resesh-abi1.4" };
     constexpr size_t MaximumQueuedEventUnits = 16 * 1024 * 1024;
     constexpr uint32_t MaximumOutputCharacters = 16 * 1024 * 1024;
     constexpr uint32_t MaximumSearchCharacters = 1024 * 1024;
@@ -743,6 +743,220 @@ try
             (searchState.Invalidated ? ReseshTerminalSearchStateInvalidated : 0u) |
                 (searchState.InvalidRegex ? ReseshTerminalSearchStateInvalidRegex : 0u),
         };
+        return S_OK;
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalGetMarks(
+    const ReseshTerminalHandle terminal,
+    ReseshTerminalMarkRecord* const records,
+    const uint32_t capacity,
+    uint32_t* const requiredCapacity)
+try
+{
+    RETURN_HR_IF_NULL(E_INVALIDARG, requiredCapacity);
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        const auto marks = state.terminal->GetMarks();
+        const auto required = gsl::narrow<uint32_t>(marks.size());
+        *requiredCapacity = required;
+        RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER), capacity < required || (required > 0 && !records));
+        for (uint32_t index = 0; index < required; ++index)
+        {
+            const auto& mark = marks[index];
+            const auto commandEnd = mark.CommandEnd.value_or(til::point{ -1, -1 });
+            const auto outputEnd = mark.OutputEnd.value_or(til::point{ -1, -1 });
+            records[index] = {
+                sizeof(ReseshTerminalMarkRecord),
+                RESESH_TERMINAL_ABI_MAJOR,
+                RESESH_TERMINAL_ABI_MINOR,
+                mark.Id,
+                mark.Generation,
+                static_cast<uint32_t>(mark.Kind),
+                (mark.ExitCode ? ReseshTerminalMarkHasExitCode : 0u) |
+                    (mark.CommandEnd ? ReseshTerminalMarkHasCommand : 0u) |
+                    (mark.OutputEnd ? ReseshTerminalMarkHasOutput : 0u),
+                mark.Category,
+                mark.Color,
+                gsl::narrow_cast<int32_t>(mark.ExitCode.value_or(0)),
+                mark.Start.x,
+                mark.Start.y,
+                mark.PromptEnd.x,
+                mark.PromptEnd.y,
+                commandEnd.x,
+                commandEnd.y,
+                outputEnd.x,
+                outputEnd.y,
+            };
+        }
+        return S_OK;
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalGetSearchRows(
+    const ReseshTerminalHandle terminal,
+    int32_t* const rows,
+    const uint32_t capacity,
+    uint32_t* const requiredCapacity)
+try
+{
+    RETURN_HR_IF_NULL(E_INVALIDARG, requiredCapacity);
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        const auto searchRows = state.terminal->GetSearchRows();
+        const auto required = gsl::narrow<uint32_t>(searchRows.size());
+        *requiredCapacity = required;
+        RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER), capacity < required || (required > 0 && !rows));
+        std::copy(searchRows.begin(), searchRows.end(), rows);
+        return S_OK;
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalGetMarkText(
+    const ReseshTerminalHandle terminal,
+    const uint64_t markId,
+    const uint8_t includeOutput,
+    wchar_t* const buffer,
+    const uint32_t capacity,
+    uint32_t* const requiredCapacity)
+try
+{
+    RETURN_HR_IF_NULL(E_INVALIDARG, requiredCapacity);
+    RETURN_HR_IF(E_INVALIDARG, markId == 0);
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        const auto text = state.terminal->GetMarkText(markId, includeOutput != 0);
+        const auto required = gsl::narrow<uint32_t>(text.size() + 1);
+        *requiredCapacity = required;
+        RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER), !buffer || capacity < required);
+        std::copy(text.begin(), text.end(), buffer);
+        buffer[text.size()] = L'\0';
+        return S_OK;
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalScrollToMark(
+    const ReseshTerminalHandle terminal,
+    const uint64_t markId)
+try
+{
+    RETURN_HR_IF(E_INVALIDARG, markId == 0);
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        return state.terminal->ScrollToMark(markId) ? S_OK : HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalGetCursorLogicalLine(
+    const ReseshTerminalHandle terminal,
+    ReseshTerminalCursorLogicalLine* const line,
+    wchar_t* const buffer,
+    const uint32_t capacity,
+    uint32_t* const requiredCapacity)
+try
+{
+    RETURN_HR_IF_NULL(E_INVALIDARG, line);
+    RETURN_HR_IF_NULL(E_INVALIDARG, requiredCapacity);
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        const auto probe = state.terminal->BeginPromptProbe();
+        const auto required = gsl::narrow<uint32_t>(probe.Text.size() + 1);
+        *line = {
+            sizeof(ReseshTerminalCursorLogicalLine),
+            RESESH_TERMINAL_ABI_MAJOR,
+            RESESH_TERMINAL_ABI_MINOR,
+            probe.Id,
+            probe.Generation,
+            probe.Start.y,
+            probe.Cursor.y,
+            probe.Cursor.x,
+        };
+        *requiredCapacity = required;
+        if (!buffer || capacity < required)
+        {
+            state.terminal->DiscardPromptProbe(probe.Id);
+            return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
+        }
+        std::copy(probe.Text.begin(), probe.Text.end(), buffer);
+        buffer[probe.Text.size()] = L'\0';
+        return S_OK;
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalCreateApplicationMark(
+    const ReseshTerminalHandle terminal,
+    const uint64_t probeId,
+    const wchar_t* const command,
+    const uint32_t commandLength,
+    const int32_t exitCode,
+    const uint8_t hasExitCode)
+try
+{
+    RETURN_HR_IF(E_INVALIDARG,
+                 probeId == 0 ||
+                     commandLength == 0 ||
+                     commandLength > MaximumSearchCharacters ||
+                     !command);
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        const auto exit = hasExitCode ? std::optional<uint32_t>{ gsl::narrow_cast<uint32_t>(exitCode) } : std::nullopt;
+        return state.terminal->CommitPromptProbe(
+                   probeId,
+                   std::wstring_view{ command, commandLength },
+                   exit) ?
+                   S_OK :
+                   HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalDiscardPromptProbe(
+    const ReseshTerminalHandle terminal,
+    const uint64_t probeId)
+try
+{
+    RETURN_HR_IF(E_INVALIDARG, probeId == 0);
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        return state.terminal->DiscardPromptProbe(probeId) ? S_OK : HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalAddBookmark(
+    const ReseshTerminalHandle terminal,
+    const int32_t row,
+    const uint32_t color,
+    const uint8_t hasColor,
+    uint64_t* const bookmarkId)
+try
+{
+    RETURN_HR_IF_NULL(E_INVALIDARG, bookmarkId);
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        *bookmarkId = state.terminal->AddBookmark(
+            row,
+            hasColor ? std::optional<til::color>{ til::color{ color } } : std::nullopt);
+        return *bookmarkId == 0 ? E_INVALIDARG : S_OK;
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalRemoveBookmark(
+    const ReseshTerminalHandle terminal,
+    const uint64_t bookmarkId)
+try
+{
+    RETURN_HR_IF(E_INVALIDARG, bookmarkId == 0);
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        return state.terminal->RemoveBookmark(bookmarkId) ? S_OK : HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    });
+}
+CATCH_RETURN()
+
+HRESULT __stdcall ReseshTerminalClearBookmarks(const ReseshTerminalHandle terminal)
+try
+{
+    return WithTerminal(terminal, [&](TerminalState& state) {
+        state.terminal->ClearBookmarks();
         return S_OK;
     });
 }

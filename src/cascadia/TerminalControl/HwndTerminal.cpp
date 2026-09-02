@@ -17,6 +17,8 @@
 #include "../../renderer/uia/UiaRenderer.hpp"
 #include "../../types/viewport.cpp"
 
+#include <unordered_set>
+
 using namespace ::Microsoft::Console::VirtualTerminal;
 using namespace ::Microsoft::Terminal::Core;
 
@@ -843,6 +845,450 @@ void HwndTerminal::ClearSearch()
 HwndTerminalSearchState HwndTerminal::GetSearchState() const noexcept
 {
     return _searchState;
+}
+
+uint64_t HwndTerminal::_ensureRowMarkId(const til::CoordType row, const uint8_t kind)
+{
+    auto& buffer = _terminal->GetTextBuffer();
+    auto& bufferRow = buffer.GetMutableRowByOffset(row);
+    auto data = bufferRow.GetScrollbarData().value_or(ScrollbarData{});
+    if (data.reseshId == 0)
+    {
+        data.reseshId = _nextMarkId++;
+    }
+    if (kind != 0)
+    {
+        data.reseshKind = kind;
+    }
+    bufferRow.SetScrollbarData(data);
+    return data.reseshId;
+}
+
+std::optional<til::CoordType> HwndTerminal::_findRowByMarkId(const uint64_t id) const
+{
+    if (!_terminal || id == 0)
+    {
+        return std::nullopt;
+    }
+    for (const auto& mark : _terminal->GetTextBuffer().GetMarkRows())
+    {
+        if (mark.data.reseshId == id || mark.data.reseshBookmarkId == id)
+        {
+            return mark.row;
+        }
+    }
+    return std::nullopt;
+}
+
+til::CoordType HwndTerminal::_logicalLineStart(til::CoordType row) const
+{
+    const auto& buffer = _terminal->GetTextBuffer();
+    while (row > 0 && buffer.GetRowByOffset(row - 1).WasWrapForced())
+    {
+        --row;
+    }
+    return row;
+}
+
+til::CoordType HwndTerminal::_logicalLineEnd(til::CoordType row) const
+{
+    const auto& buffer = _terminal->GetTextBuffer();
+    const auto last = buffer.GetSize().BottomInclusive();
+    while (row < last && buffer.GetRowByOffset(row).WasWrapForced())
+    {
+        ++row;
+    }
+    return row;
+}
+
+std::wstring HwndTerminal::_readRows(const til::CoordType first, const til::CoordType last) const
+{
+    std::wstring result;
+    const auto& buffer = _terminal->GetTextBuffer();
+    for (auto rowIndex = first; rowIndex <= last; ++rowIndex)
+    {
+        const auto& row = buffer.GetRowByOffset(rowIndex);
+        const auto text = row.GetText();
+        const auto end = text.find_last_not_of(UNICODE_SPACE);
+        if (end != std::wstring_view::npos)
+        {
+            result.append(text.substr(0, end + 1));
+        }
+        if (rowIndex != last && !row.WasWrapForced())
+        {
+            result.push_back(L'\n');
+        }
+    }
+    while (!result.empty() && (result.back() == L'\n' || result.back() == L'\r' || result.back() == UNICODE_SPACE))
+    {
+        result.pop_back();
+    }
+    return result;
+}
+
+std::vector<HwndTerminalMark> HwndTerminal::GetMarks()
+{
+    if (!_terminal)
+    {
+        return {};
+    }
+    const auto lock = _terminal->LockForWriting();
+    std::vector<HwndTerminalMark> result;
+
+    auto exactMarks = _terminal->GetMarkExtents();
+    result.reserve(exactMarks.size() + _applicationCommands.size());
+    for (auto& mark : exactMarks)
+    {
+        const auto id = _ensureRowMarkId(mark.start.y, 0);
+        mark.data.reseshId = id;
+        result.push_back({
+            id,
+            _markGeneration,
+            HwndTerminalMarkKind::ExactCommand,
+            static_cast<uint32_t>(mark.data.category),
+            static_cast<uint32_t>(static_cast<COLORREF>(_terminal->GetColorForMark(mark.data))),
+            mark.data.exitCode,
+            mark.start,
+            mark.end,
+            mark.commandEnd,
+            mark.outputEnd,
+        });
+    }
+
+    std::unordered_set<uint64_t> liveApplicationIds;
+    for (const auto& rowMark : _terminal->GetTextBuffer().GetMarkRows())
+    {
+        if (rowMark.data.reseshBookmarkId != 0)
+        {
+            result.push_back({
+                rowMark.data.reseshBookmarkId,
+                _markGeneration,
+                HwndTerminalMarkKind::Bookmark,
+                static_cast<uint32_t>(rowMark.data.category),
+                static_cast<uint32_t>(static_cast<COLORREF>(
+                    rowMark.data.reseshBookmarkColor.value_or(_terminal->GetColorForMark(rowMark.data)))),
+                std::nullopt,
+                { 0, rowMark.row },
+                { 0, rowMark.row },
+                std::nullopt,
+                std::nullopt,
+            });
+        }
+        if (rowMark.data.reseshKind == 2)
+        {
+            liveApplicationIds.emplace(rowMark.data.reseshId);
+            const auto logicalEnd = _logicalLineEnd(rowMark.row);
+            result.push_back({
+                rowMark.data.reseshId,
+                _markGeneration,
+                HwndTerminalMarkKind::ApplicationCommand,
+                static_cast<uint32_t>(rowMark.data.category),
+                static_cast<uint32_t>(static_cast<COLORREF>(_terminal->GetColorForMark(rowMark.data))),
+                rowMark.data.exitCode,
+                { 0, rowMark.row },
+                { 0, rowMark.row },
+                til::point{ 0, logicalEnd },
+                std::nullopt,
+            });
+        }
+    }
+    std::erase_if(_applicationCommands, [&](const auto& entry) {
+        return !liveApplicationIds.contains(entry.first);
+    });
+    std::sort(result.begin(), result.end(), [](const auto& left, const auto& right) {
+        if (left.Start.y != right.Start.y)
+        {
+            return left.Start.y < right.Start.y;
+        }
+        return left.Kind < right.Kind;
+    });
+    return result;
+}
+
+std::vector<int32_t> HwndTerminal::GetSearchRows() const
+{
+    if (!_terminal)
+    {
+        return {};
+    }
+    const auto lock = _terminal->LockForReading();
+    std::vector<int32_t> rows;
+    rows.reserve(_searcher.Results().size());
+    for (const auto& result : _searcher.Results())
+    {
+        rows.push_back(result.start.y);
+    }
+    return rows;
+}
+
+std::wstring HwndTerminal::GetMarkText(const uint64_t id, const bool includeOutput)
+{
+    if (!_terminal || id == 0)
+    {
+        return {};
+    }
+    const auto lock = _terminal->LockForWriting();
+    const auto row = _findRowByMarkId(id);
+    if (!row)
+    {
+        return {};
+    }
+    const auto rowData = _terminal->GetTextBuffer().GetRowByOffset(*row).GetScrollbarData();
+    if (rowData && rowData->reseshKind == 3)
+    {
+        return _readRows(*row, _logicalLineEnd(*row));
+    }
+
+    if (const auto application = _applicationCommands.find(id); application != _applicationCommands.end())
+    {
+        if (!includeOutput)
+        {
+            return application->second.Command;
+        }
+        auto last = _terminal->GetTextBuffer().GetSize().BottomInclusive();
+        for (const auto& mark : _terminal->GetTextBuffer().GetMarkRows())
+        {
+            if (mark.row > *row && mark.data.reseshId != 0 && mark.data.reseshKind != 3)
+            {
+                last = mark.row - 1;
+                break;
+            }
+        }
+        const auto cursor = _terminal->GetTextBuffer().GetCursor().GetPosition();
+        const auto cursorStart = _logicalLineStart(cursor.y);
+        if (cursorStart > *row)
+        {
+            last = std::min(last, cursorStart - 1);
+        }
+        return _readRows(*row, std::max(*row, last));
+    }
+
+    for (const auto& mark : _terminal->GetMarkExtents())
+    {
+        if (mark.data.reseshId != id)
+        {
+            continue;
+        }
+        const auto& buffer = _terminal->GetTextBuffer();
+        if (!includeOutput)
+        {
+            return mark.commandEnd ? buffer.GetPlainText(mark.end, *mark.commandEnd) : std::wstring{};
+        }
+        const auto end = til::coalesce_value(mark.outputEnd, mark.commandEnd, mark.end);
+        return buffer.GetPlainText(mark.start, end);
+    }
+    return {};
+}
+
+bool HwndTerminal::ScrollToMark(const uint64_t id)
+{
+    if (!_terminal)
+    {
+        return false;
+    }
+    const auto lock = _terminal->LockForWriting();
+    if (const auto row = _findRowByMarkId(id))
+    {
+        const auto height = _terminal->GetViewport().Height();
+        _terminal->UserScrollViewport(std::max(0, *row - height / 2));
+        return true;
+    }
+    return false;
+}
+
+HwndTerminalPromptProbe HwndTerminal::BeginPromptProbe()
+{
+    if (!_terminal)
+    {
+        return {};
+    }
+    const auto lock = _terminal->LockForWriting();
+    const auto cursor = _terminal->GetTextBuffer().GetCursor().GetPosition();
+    const auto start = _logicalLineStart(cursor.y);
+    auto& row = _terminal->GetTextBuffer().GetMutableRowByOffset(start);
+    auto data = row.GetScrollbarData().value_or(ScrollbarData{});
+    if (data.reseshKind == 3)
+    {
+        return {
+            data.reseshId,
+            _markGeneration,
+            { 0, start },
+            cursor,
+            _readRows(start, cursor.y),
+        };
+    }
+    if (data.reseshId != 0)
+    {
+        return {};
+    }
+
+    data.reseshId = _nextMarkId++;
+    data.reseshKind = 3;
+    row.SetScrollbarData(data);
+    return {
+        data.reseshId,
+        _markGeneration,
+        { 0, start },
+        cursor,
+        _readRows(start, cursor.y),
+    };
+}
+
+bool HwndTerminal::CommitPromptProbe(
+    const uint64_t id,
+    const std::wstring_view command,
+    const std::optional<uint32_t> exitCode)
+{
+    if (!_terminal || id == 0 || command.empty())
+    {
+        return false;
+    }
+    const auto lock = _terminal->LockForWriting();
+    const auto row = _findRowByMarkId(id);
+    if (!row)
+    {
+        return false;
+    }
+    auto& bufferRow = _terminal->GetTextBuffer().GetMutableRowByOffset(*row);
+    auto data = bufferRow.GetScrollbarData();
+    if (!data || (data->reseshKind != 3 && data->reseshKind != 2))
+    {
+        return false;
+    }
+    data->reseshKind = 2;
+    data->exitCode = exitCode;
+    bufferRow.SetScrollbarData(data);
+    _applicationCommands[id] = {
+        std::wstring{ command },
+        { 0, *row },
+        _terminal->GetTextBuffer().GetCursor().GetPosition(),
+    };
+    ++_markGeneration;
+    return true;
+}
+
+bool HwndTerminal::DiscardPromptProbe(const uint64_t id)
+{
+    if (!_terminal || id == 0)
+    {
+        return false;
+    }
+    const auto lock = _terminal->LockForWriting();
+    const auto row = _findRowByMarkId(id);
+    if (!row)
+    {
+        return false;
+    }
+    auto& bufferRow = _terminal->GetTextBuffer().GetMutableRowByOffset(*row);
+    auto data = bufferRow.GetScrollbarData();
+    if (!data || data->reseshKind != 3)
+    {
+        return false;
+    }
+    data->reseshId = 0;
+    data->reseshKind = 0;
+    if (data->reseshBookmarkId == 0)
+    {
+        bufferRow.SetScrollbarData(std::nullopt);
+    }
+    else
+    {
+        bufferRow.SetScrollbarData(data);
+    }
+    return true;
+}
+
+uint64_t HwndTerminal::AddBookmark(const int32_t requestedRow, const std::optional<til::color> color)
+{
+    if (!_terminal)
+    {
+        return 0;
+    }
+    const auto lock = _terminal->LockForWriting();
+    const auto& buffer = _terminal->GetTextBuffer();
+    const auto cursorRow = buffer.GetCursor().GetPosition().y;
+    const auto row = std::clamp(requestedRow < 0 ? cursorRow : requestedRow, 0, buffer.GetSize().BottomInclusive());
+    auto& bufferRow = _terminal->GetTextBuffer().GetMutableRowByOffset(row);
+    auto data = bufferRow.GetScrollbarData().value_or(ScrollbarData{});
+    if (data.reseshBookmarkId != 0)
+    {
+        return data.reseshBookmarkId;
+    }
+    data.reseshBookmarkId = _nextMarkId++;
+    data.reseshBookmarkColor = color;
+    bufferRow.SetScrollbarData(data);
+    ++_markGeneration;
+    return data.reseshBookmarkId;
+}
+
+bool HwndTerminal::RemoveBookmark(const uint64_t id)
+{
+    if (!_terminal || id == 0)
+    {
+        return false;
+    }
+    const auto lock = _terminal->LockForWriting();
+    const auto row = _findRowByMarkId(id);
+    if (!row)
+    {
+        return false;
+    }
+    auto& bufferRow = _terminal->GetTextBuffer().GetMutableRowByOffset(*row);
+    auto data = bufferRow.GetScrollbarData();
+    if (!data || data->reseshBookmarkId != id)
+    {
+        return false;
+    }
+    data->reseshBookmarkId = 0;
+    data->reseshBookmarkColor.reset();
+    if (data->reseshId == 0)
+    {
+        bufferRow.SetScrollbarData(std::nullopt);
+    }
+    else
+    {
+        bufferRow.SetScrollbarData(data);
+    }
+    ++_markGeneration;
+    return true;
+}
+
+void HwndTerminal::ClearBookmarks()
+{
+    if (!_terminal)
+    {
+        return;
+    }
+    const auto lock = _terminal->LockForWriting();
+    bool changed = false;
+    for (const auto& mark : _terminal->GetTextBuffer().GetMarkRows())
+    {
+        if (mark.data.reseshBookmarkId != 0)
+        {
+            auto data = mark.data;
+            data.reseshBookmarkId = 0;
+            data.reseshBookmarkColor.reset();
+            auto& row = _terminal->GetTextBuffer().GetMutableRowByOffset(mark.row);
+            if (data.reseshId == 0)
+            {
+                row.SetScrollbarData(std::nullopt);
+            }
+            else
+            {
+                row.SetScrollbarData(data);
+            }
+            changed = true;
+        }
+    }
+    if (changed)
+    {
+        ++_markGeneration;
+    }
+}
+
+uint64_t HwndTerminal::MarkGeneration() const noexcept
+{
+    return _markGeneration;
 }
 
 void _stdcall AvoidBuggyTSFConsoleFlags()

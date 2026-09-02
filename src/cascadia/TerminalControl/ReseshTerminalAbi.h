@@ -7,7 +7,7 @@
 #include <windows.h>
 
 #define RESESH_TERMINAL_ABI_MAJOR 1u
-#define RESESH_TERMINAL_ABI_MINOR 3u
+#define RESESH_TERMINAL_ABI_MINOR 4u
 #define RESESH_TERMINAL_ABI_VERSION ((RESESH_TERMINAL_ABI_MAJOR << 16u) | RESESH_TERMINAL_ABI_MINOR)
 
 #ifdef __cplusplus
@@ -57,6 +57,20 @@ typedef enum ReseshTerminalSearchStateFlags
     ReseshTerminalSearchStateInvalidated = 0x00000001u,
     ReseshTerminalSearchStateInvalidRegex = 0x00000002u,
 } ReseshTerminalSearchStateFlags;
+
+typedef enum ReseshTerminalMarkKind
+{
+    ReseshTerminalMarkExactCommand = 1,
+    ReseshTerminalMarkApplicationCommand = 2,
+    ReseshTerminalMarkBookmark = 3,
+} ReseshTerminalMarkKind;
+
+typedef enum ReseshTerminalMarkFlags
+{
+    ReseshTerminalMarkHasExitCode = 0x00000001u,
+    ReseshTerminalMarkHasCommand = 0x00000002u,
+    ReseshTerminalMarkHasOutput = 0x00000004u,
+} ReseshTerminalMarkFlags;
 
 typedef enum ReseshTerminalOptionFlags
 {
@@ -177,6 +191,40 @@ typedef struct ReseshTerminalSearchState
     uint32_t flags;
 } ReseshTerminalSearchState;
 
+typedef struct ReseshTerminalMarkRecord
+{
+    uint32_t structSize;
+    uint16_t abiMajor;
+    uint16_t abiMinor;
+    uint64_t id;
+    uint64_t generation;
+    uint32_t kind;
+    uint32_t flags;
+    uint32_t category;
+    uint32_t color;
+    int32_t exitCode;
+    int32_t startX;
+    int32_t startY;
+    int32_t promptEndX;
+    int32_t promptEndY;
+    int32_t commandEndX;
+    int32_t commandEndY;
+    int32_t outputEndX;
+    int32_t outputEndY;
+} ReseshTerminalMarkRecord;
+
+typedef struct ReseshTerminalCursorLogicalLine
+{
+    uint32_t structSize;
+    uint16_t abiMajor;
+    uint16_t abiMinor;
+    uint64_t probeId;
+    uint64_t generation;
+    int32_t startRow;
+    int32_t cursorRow;
+    int32_t cursorColumn;
+} ReseshTerminalCursorLogicalLine;
+
 typedef void(__stdcall* ReseshTerminalEventCallback)(
     void* context,
     const ReseshTerminalEvent* eventData);
@@ -244,6 +292,52 @@ __declspec(dllexport) HRESULT __stdcall ReseshTerminalClearSearch(ReseshTerminal
 __declspec(dllexport) HRESULT __stdcall ReseshTerminalGetSearchState(
     ReseshTerminalHandle terminal,
     ReseshTerminalSearchState* state);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalGetMarks(
+    ReseshTerminalHandle terminal,
+    ReseshTerminalMarkRecord* records,
+    uint32_t capacity,
+    uint32_t* requiredCapacity);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalGetSearchRows(
+    ReseshTerminalHandle terminal,
+    int32_t* rows,
+    uint32_t capacity,
+    uint32_t* requiredCapacity);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalGetMarkText(
+    ReseshTerminalHandle terminal,
+    uint64_t markId,
+    uint8_t includeOutput,
+    wchar_t* buffer,
+    uint32_t capacity,
+    uint32_t* requiredCapacity);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalScrollToMark(
+    ReseshTerminalHandle terminal,
+    uint64_t markId);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalGetCursorLogicalLine(
+    ReseshTerminalHandle terminal,
+    ReseshTerminalCursorLogicalLine* line,
+    wchar_t* buffer,
+    uint32_t capacity,
+    uint32_t* requiredCapacity);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalCreateApplicationMark(
+    ReseshTerminalHandle terminal,
+    uint64_t probeId,
+    const wchar_t* command,
+    uint32_t commandLength,
+    int32_t exitCode,
+    uint8_t hasExitCode);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalDiscardPromptProbe(
+    ReseshTerminalHandle terminal,
+    uint64_t probeId);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalAddBookmark(
+    ReseshTerminalHandle terminal,
+    int32_t row,
+    uint32_t color,
+    uint8_t hasColor,
+    uint64_t* bookmarkId);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalRemoveBookmark(
+    ReseshTerminalHandle terminal,
+    uint64_t bookmarkId);
+__declspec(dllexport) HRESULT __stdcall ReseshTerminalClearBookmarks(ReseshTerminalHandle terminal);
 
 #ifdef __cplusplus
 }

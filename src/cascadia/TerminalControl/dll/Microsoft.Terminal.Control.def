@@ -27,16 +27,26 @@ EXPORTS
   TerminalUserScroll
   ReseshTerminalClearSelection
   ReseshTerminalClearSearch
+  ReseshTerminalClearBookmarks
   ReseshTerminalCopySelection
   ReseshTerminalCreate
+  ReseshTerminalCreateApplicationMark
+  ReseshTerminalDiscardPromptProbe
   ReseshTerminalDestroy
   ReseshTerminalGetAbiVersion
   ReseshTerminalGetBuildId
   ReseshTerminalGetSearchState
+  ReseshTerminalGetCursorLogicalLine
+  ReseshTerminalGetMarks
+  ReseshTerminalGetMarkText
+  ReseshTerminalGetSearchRows
   ReseshTerminalIsSelectionActive
   ReseshTerminalRegisterEventCallback
   ReseshTerminalPasteText
+  ReseshTerminalAddBookmark
+  ReseshTerminalRemoveBookmark
   ReseshTerminalSearch
+  ReseshTerminalScrollToMark
   ReseshTerminalResizePixels
   ReseshTerminalSendCharEvent
   ReseshTerminalSendKeyEvent

@@ -42,6 +42,14 @@ struct ScrollbarData
     // Prompts without an exit code haven't had a matching FTCS CommandEnd
     // called yet. Any value other than 0 is an error.
     std::optional<uint32_t> exitCode;
+
+    // Resesh assigns opaque IDs to commands and bookmarks exposed through its
+    // application ABI. Both identities travel with the row through rotation
+    // and reflow, and can coexist on the same row.
+    uint64_t reseshId{};
+    uint8_t reseshKind{};
+    uint64_t reseshBookmarkId{};
+    std::optional<til::color> reseshBookmarkColor;
     // Future consideration: stick the literal command as a string on here, if
     // we were given it with the 633;E sequence.
 };
