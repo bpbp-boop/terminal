@@ -1027,7 +1027,8 @@ std::optional<std::pair<std::wstring, uint32_t>> HwndTerminal::_LinkAt(const LPA
     }
     const auto cell = pixel / fontSize;
     const auto lock = _terminal->LockForReading();
-    if (!_terminal->GetViewport().IsInBounds(cell))
+    const auto viewportSize = _terminal->GetViewport().Dimensions();
+    if (cell.x >= viewportSize.width || cell.y >= viewportSize.height)
     {
         return std::nullopt;
     }
@@ -1061,7 +1062,8 @@ void HwndTerminal::_UpdateHoveredLink(const LPARAM lParam)
     {
         const auto cell = pixel / fontSize;
         const auto lock = _terminal->LockForReading();
-        if (_terminal->GetViewport().IsInBounds(cell))
+        const auto viewportSize = _terminal->GetViewport().Dimensions();
+        if (cell.x < viewportSize.width && cell.y < viewportSize.height)
         {
             hyperlinkId = _terminal->GetHyperlinkIdAtViewportPosition(cell);
             if (hyperlinkId == 0)
